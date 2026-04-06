@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chaitu426/mini-docker/internal/security"
+	"github.com/chaitu426/minibox/internal/security"
 )
 
 type ContainerStats struct {
@@ -36,7 +36,7 @@ func GetContainerStats(id string) (ContainerStats, error) {
 	if !security.ValidContainerID(id) {
 		return ContainerStats{}, fmt.Errorf("invalid container id")
 	}
-	cgPath := filepath.Join("/sys/fs/cgroup/mini-docker", id)
+	cgPath := filepath.Join("/sys/fs/cgroup/minibox", id)
 	if _, err := os.Stat(cgPath); os.IsNotExist(err) {
 		return ContainerStats{}, fmt.Errorf("container cgroup not found")
 	}

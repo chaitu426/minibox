@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/chaitu426/mini-docker/internal/api/handler"
+	"github.com/chaitu426/minibox/internal/api/handler"
 )
 
 // maxBytes wraps a handler with a request body size limit.

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Remove mini-docker local state under ./data (or MINI_DOCKER_DATA_ROOT).
+# Remove minibox local state under ./data (or MINIBOX_DATA_ROOT).
 # Must be run with sudo if files are root-owned:  sudo ./scripts/clean-data.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET="${MINI_DOCKER_DATA_ROOT:-$REPO_ROOT/data}"
+TARGET="${MINIBOX_DATA_ROOT:-$REPO_ROOT/data}"
 
 # SECURITY: Guardrail against deleting system critical directories
 FORBIDDEN_PATHS=("/" "/home" "/root" "/usr" "/etc" "/var" "/boot" "/bin" "/sbin" "/dev" "/proc" "/sys" "/run")

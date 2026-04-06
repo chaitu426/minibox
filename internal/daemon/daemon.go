@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chaitu426/mini-docker/internal/api"
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/network"
+	"github.com/chaitu426/minibox/internal/api"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/network"
 )
 
 type Daemon struct {

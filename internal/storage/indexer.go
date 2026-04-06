@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/chaitu426/mini-docker/internal/config"
+	"github.com/chaitu426/minibox/internal/config"
 )
 
 type FileIndex struct {

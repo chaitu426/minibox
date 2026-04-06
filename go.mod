@@ -1,4 +1,4 @@
-module github.com/chaitu426/mini-docker
+module github.com/chaitu426/minibox
 
 go 1.26.1
 

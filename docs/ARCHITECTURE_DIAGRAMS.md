@@ -1,4 +1,4 @@
-# mini-docker Architecture Diagrams
+# minibox Architecture Diagrams
 
 This file contains visual architecture diagrams for major features, plus one full end-to-end system diagram.
 
@@ -10,7 +10,7 @@ Use any Markdown viewer with Mermaid support to render these.
 
 ```mermaid
 flowchart LR
-    U[User] --> CLI[mini-docker CLI]
+    U[User] --> CLI[minibox CLI]
     CLI -->|HTTP| API[Daemon API Router]
     API --> H[Handlers]
 
@@ -33,7 +33,7 @@ flowchart LR
     CHILD --> SEC[Caps + Rlimits + Seccomp]
     CHILD --> CG[Cgroups v2]
 
-    N --> BR[Bridge mini-docker0]
+    N --> BR[Bridge minibox0]
     N --> VETH[Veth Pair]
     N --> IPT[iptables NAT/DNAT]
 
@@ -59,7 +59,7 @@ sequenceDiagram
     participant I as index.json
     participant B as blobs/sha256
 
-    U->>C: mini-docker build -t app .
+    U->>C: minibox build -t app .
     C->>A: POST image + minibox + context
     A->>P: Parse MiniBox
     P-->>A: Build spec
@@ -89,7 +89,7 @@ sequenceDiagram
     participant IN as Tiny Init
     participant ST as state.json
 
-    U->>C: mini-docker run [-d] image cmd
+    U->>C: minibox run [-d] image cmd
     C->>A: POST run request
     A->>R: RunCommand / RunCommandStream
     R->>R: Resolve image config + layers
@@ -114,7 +114,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     subgraph Host
-      BR[Bridge mini-docker0 172.19.0.1/24]
+      BR[Bridge minibox0 172.19.0.1/24]
       HV[veth-<id>]
       IPT1[iptables nat POSTROUTING MASQUERADE]
       IPT2[iptables nat PREROUTING/OUTPUT DNAT]
@@ -149,7 +149,7 @@ sequenceDiagram
     participant R as Runtime
     participant NS as nsenter command
     participant ST as state.json
-    participant PS as mini-docker ps
+    participant PS as minibox ps
 
     B->>OCI: Write mini.healthcheck.cmd
     B->>OCI: Write mini.healthcheck.interval
@@ -242,9 +242,9 @@ flowchart LR
     UH --> STATE
     EXIT[Process exit] --> MARK[MarkContainerExited]
     MARK --> STATE
-    CLI1[mini-docker ps] --> STATE
-    CLI2[mini-docker logs] --> LOG
-    CLI3[mini-docker stats] --> CGFS[/sys/fs/cgroup + net metrics]
+    CLI1[minibox ps] --> STATE
+    CLI2[minibox logs] --> LOG
+    CLI3[minibox stats] --> CGFS[/sys/fs/cgroup + net metrics]
 ```
 
 ---
@@ -274,7 +274,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    CLI[mini-docker CLI] --> PING[/GET /ping/]
+    CLI[minibox CLI] --> PING[/GET /ping/]
     CLI --> BUILD[/POST /containers/build/]
     CLI --> RUN[/POST /containers/run/]
     CLI --> LISTC[/GET /containers/]

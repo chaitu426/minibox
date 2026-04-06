@@ -1,4 +1,4 @@
-# mini-docker Full Architecture Deep Dive
+# minibox Full Architecture Deep Dive
 
 This document explains the current system end-to-end in implementation-level depth:
 
@@ -16,7 +16,7 @@ For visual references, see `docs/ARCHITECTURE_DIAGRAMS.md`.
 
 ## 1) System Overview
 
-mini-docker has two binaries:
+minibox has two binaries:
 
 - **Daemon**: `cmd/daemon/main.go` → starts HTTP API and runtime backend
 - **CLI**: `cmd/cli/main.go` → user-facing command tool that calls daemon APIs
@@ -152,7 +152,7 @@ Structured stream in builder:
 
 ## 4) OCI Storage Layout
 
-Under `DataRoot` (default `/var/lib/mini-docker` unless overridden):
+Under `DataRoot` (default `/var/lib/minibox` unless overridden):
 
 - `index.json` (image references)
 - `blobs/sha256/<digest>` (manifest/config/layer blobs)
@@ -227,7 +227,7 @@ This prevents zombie accumulation when workload forks subprocesses.
 
 - Method-based routes (`GET`/`POST`) in `internal/api/router.go`
 - request body limits on high-risk endpoints
-- optional bearer token auth (`MINI_DOCKER_API_TOKEN`) via middleware
+- optional bearer token auth (`MINIBOX_API_TOKEN`) via middleware
 - strict input validation (`internal/security/security.go`)
 
 ### 6.2 Runtime hardening
@@ -242,7 +242,7 @@ This prevents zombie accumulation when workload forks subprocesses.
 
 Build contexts constrained to configured path prefixes:
 
-- `MINI_DOCKER_BUILD_PREFIXES`
+- `MINIBOX_BUILD_PREFIXES`
 - validated in build handler
 
 ---
@@ -255,7 +255,7 @@ Implemented in `internal/network/network.go`.
 
 `SetupBridge()`:
 
-- creates `mini-docker0` bridge
+- creates `minibox0` bridge
 - assigns `172.19.0.1/24`
 - enables forwarding sysctls
 - adds NAT masquerade rules
@@ -303,7 +303,7 @@ Notes:
 
 Implemented in `internal/storage/image_archive.go`.
 
-### 9.1 Save (`mini-docker save`)
+### 9.1 Save (`minibox save`)
 
 - Find manifest digest by image name in `index.json`
 - Read manifest + config + layer blobs
@@ -311,7 +311,7 @@ Implemented in `internal/storage/image_archive.go`.
   - `meta.json` (`image`, `manifest_digest`)
   - `blobs/sha256/*` files (+ optional `*.index.json`)
 
-### 9.2 Load (`mini-docker load`)
+### 9.2 Load (`minibox load`)
 
 - Unpack tar under `DataRoot`
 - Read `meta.json`
@@ -357,7 +357,7 @@ CLI in `cmd/cli/main.go`:
 - supports token auth by env passthrough
 - stable timeouts and consistent exit codes
 - table output and optional JSON (`ps --json`, `images --json`)
-- plain mode via `NO_COLOR` / `MINI_DOCKER_PLAIN`
+- plain mode via `NO_COLOR` / `MINIBOX_PLAIN`
 
 Major commands:
 
@@ -406,12 +406,12 @@ Major commands:
 
 From `internal/config/config.go` + CLI env usage:
 
-- `MINI_DOCKER_DATA_ROOT`
-- `MINI_DOCKER_HTTP_ADDR`
-- `MINI_DOCKER_BUILD_PREFIXES`
-- `MINI_DOCKER_API_TOKEN`
-- `MINI_DOCKER_API` (CLI target)
-- `NO_COLOR`, `MINI_DOCKER_PLAIN` (CLI output mode)
+- `MINIBOX_DATA_ROOT`
+- `MINIBOX_HTTP_ADDR`
+- `MINIBOX_BUILD_PREFIXES`
+- `MINIBOX_API_TOKEN`
+- `MINIBOX_API` (CLI target)
+- `NO_COLOR`, `MINIBOX_PLAIN` (CLI output mode)
 
 ---
 
@@ -423,7 +423,7 @@ This section describes current behavior honestly for production planning:
 - Healthcheck model is basic (interval + command) and not full OCI HealthConfig semantics.
 - `exec` currently uses local `nsenter` from CLI side (not daemon-side streaming API).
 - Build system currently supports Alpine base only.
-- Save/load format is local mini-docker archive, not full Docker save format compatibility.
+- Save/load format is local minibox archive, not full Docker save format compatibility.
 
 These are good future milestones but do not block current operation.
 

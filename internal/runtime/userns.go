@@ -3,7 +3,7 @@ package runtime
 import (
 	"syscall"
 
-	"github.com/chaitu426/mini-docker/internal/config"
+	"github.com/chaitu426/minibox/internal/config"
 )
 
 // userNamespaceMappings returns Docker-style rootless UID/GID maps: the entire container ID

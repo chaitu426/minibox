@@ -1,6 +1,6 @@
-# mini-docker — CLI and daemon reference
+# minibox — CLI and daemon reference
 
-This document describes the **CLI** (`mini-docker`) and **daemon** (`mini-dockerd`), environment variables, and example commands.
+This document describes the **CLI** (`minibox`) and **daemon** (`miniboxd`), environment variables, and example commands.
 
 For a full implementation deep-dive (parser → DAG build → OCI storage → runtime → API/CLI), see `docs/ARCHITECTURE.md`.
 
@@ -33,22 +33,22 @@ minibox ping
 From the repository root:
 
 ```bash
-go build -o bin/mini-docker ./cmd/cli
-go build -o bin/mini-dockerd ./cmd/daemon
+go build -o bin/minibox ./cmd/cli
+go build -o bin/miniboxd ./cmd/daemon
 ```
 
-Add `bin/` to your `PATH`, or invoke with `./bin/mini-docker` and `./bin/mini-dockerd`.
+Add `bin/` to your `PATH`, or invoke with `./bin/minibox` and `./bin/miniboxd`.
 
 ---
 
-## Daemon (`mini-dockerd`)
+## Daemon (`miniboxd`)
 
 Runs the HTTP API and container runtime backend.
 
 ### Start
 
 ```bash
-./bin/mini-dockerd
+./bin/miniboxd
 ```
 
 Default listen address: **`127.0.0.1:8080`** (localhost only).
@@ -57,23 +57,23 @@ Default listen address: **`127.0.0.1:8080`** (localhost only).
 
 | Variable | Description |
 |----------|-------------|
-| `MINI_DOCKER_DATA_ROOT` | Data directory for images, containers, blobs (default: `/var/lib/mini-docker`). |
-| `MINI_DOCKER_HTTP_ADDR` | Listen address (default: `127.0.0.1:8080`). Use `:8080` only if you intend to expose the API on all interfaces. |
-| `MINI_DOCKER_API_TOKEN` | If set, all API requests must send `Authorization: Bearer <token>` or header `X-API-Token`. |
-| `MINI_DOCKER_BUILD_PREFIXES` | Comma-separated list of allowed **build context** directory roots. |
-| `MINI_DOCKER_SUBUID_BASE` | First host UID/GID for user-namespace mapping (default `100000`). |
-| `MINI_DOCKER_SUBUID_COUNT` | Size of ID map (default `65536`). |
+| `MINIBOX_DATA_ROOT` | Data directory for images, containers, blobs (default: `/var/lib/minibox`). |
+| `MINIBOX_HTTP_ADDR` | Listen address (default: `127.0.0.1:8080`). Use `:8080` only if you intend to expose the API on all interfaces. |
+| `MINIBOX_API_TOKEN` | If set, all API requests must send `Authorization: Bearer <token>` or header `X-API-Token`. |
+| `MINIBOX_BUILD_PREFIXES` | Comma-separated list of allowed **build context** directory roots. |
+| `MINIBOX_SUBUID_BASE` | First host UID/GID for user-namespace mapping (default `100000`). |
+| `MINIBOX_SUBUID_COUNT` | Size of ID map (default `65536`). |
 
 ---
 
-## CLI (`mini-docker`)
+## CLI (`minibox`)
 
 ### CLI environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `MINI_DOCKER_API` | Base URL of the daemon (default: `http://127.0.0.1:8080`). |
-| `MINI_DOCKER_API_TOKEN` | Bearer token if the daemon was started with `MINI_DOCKER_API_TOKEN`. |
+| `MINIBOX_API` | Base URL of the daemon (default: `http://127.0.0.1:8080`). |
+| `MINIBOX_API_TOKEN` | Bearer token if the daemon was started with `MINIBOX_API_TOKEN`. |
 
 ---
 
@@ -101,14 +101,14 @@ Default listen address: **`127.0.0.1:8080`** (localhost only).
 
 ## Commands and examples
 
-Replace `./bin/mini-docker` with `mini-docker` if it is on your `PATH`.
+Replace `./bin/minibox` with `minibox` if it is on your `PATH`.
 
 ### `ping`
 
 Check connectivity to the daemon.
 
 ```bash
-./bin/mini-docker ping
+./bin/minibox ping
 ```
 
 Example output: `Daemon is running`
@@ -119,19 +119,19 @@ Example output: `Daemon is running`
 
 Build an image from a directory containing **`MiniBox`**.
 
-**Usage:** `mini-docker build -t <image-name> [context-directory]`
+**Usage:** `minibox build -t <image-name> [context-directory]`
 
 Default context is the current directory (`.`).
 
 ```bash
 # Build from current directory, tag image as "myapp"
-./bin/mini-docker build -t myapp .
+./bin/minibox build -t myapp .
 
 # Build from a specific path
-./bin/mini-docker build -t webserver /home/user/my-project
+./bin/minibox build -t webserver /home/user/my-project
 ```
 
-**Note:** The daemon validates that the build context path is under allowed prefixes (`MINI_DOCKER_BUILD_PREFIXES`).
+**Note:** The daemon validates that the build context path is under allowed prefixes (`MINIBOX_BUILD_PREFIXES`).
 
 MiniBox healthcheck (basic support):
 
@@ -148,7 +148,7 @@ The container `HEALTH` column in `ps` updates as `starting`, `healthy`, or `unhe
 Run a command in a new container.
 
 **Usage:**  
-`mini-docker run [-d] [-m <memoryMB>] [-c <cpuMax>] [-p <host:container>] <image> [command...]`
+`minibox run [-d] [-m <memoryMB>] [-c <cpuMax>] [-p <host:container>] <image> [command...]`
 
 | Flag | Description |
 |------|-------------|
@@ -159,16 +159,16 @@ Run a command in a new container.
 
 ```bash
 # Interactive foreground run with default image command
-./bin/mini-docker run alpine /bin/sh
+./bin/minibox run alpine /bin/sh
 
 # Detached
-./bin/mini-docker run -d myapp
+./bin/minibox run -d myapp
 
 # Memory limit 512 MB, map host 9000 to container 80
-./bin/mini-docker run -m 512 -p 9000:80 myapp
+./bin/minibox run -m 512 -p 9000:80 myapp
 
 # Custom command
-./bin/mini-docker run alpine ls -la /
+./bin/minibox run alpine ls -la /
 ```
 
 If you omit `command`, the image’s default `CMD` from metadata is used (when available).
@@ -181,10 +181,10 @@ List containers.
 
 ```bash
 # Running containers only
-./bin/mini-docker ps
+./bin/minibox ps
 
 # Include stopped / exited
-./bin/mini-docker ps -a
+./bin/minibox ps -a
 ```
 
 `ps` shows `STATUS`, `HEALTH`, `EXIT`, and `PORTS`.
@@ -195,10 +195,10 @@ List containers.
 
 Live stats for one container (refreshes every second; **Ctrl+C** to stop).
 
-**Usage:** `mini-docker stats <containerID>`
+**Usage:** `minibox stats <containerID>`
 
 ```bash
-./bin/mini-docker stats a1b2c3d4
+./bin/minibox stats a1b2c3d4
 ```
 
 ---
@@ -208,7 +208,7 @@ Live stats for one container (refreshes every second; **Ctrl+C** to stop).
 List local images (from the daemon’s index).
 
 ```bash
-./bin/mini-docker images
+./bin/minibox images
 ```
 
 ---
@@ -217,10 +217,10 @@ List local images (from the daemon’s index).
 
 Export a local image into a tar archive.
 
-**Usage:** `mini-docker save <image> <output.tar>`
+**Usage:** `minibox save <image> <output.tar>`
 
 ```bash
-./bin/mini-docker save demo ./demo-image.tar
+./bin/minibox save demo ./demo-image.tar
 ```
 
 ---
@@ -229,10 +229,10 @@ Export a local image into a tar archive.
 
 Import an image tar archive created by `save`.
 
-**Usage:** `mini-docker load <input.tar>`
+**Usage:** `minibox load <input.tar>`
 
 ```bash
-./bin/mini-docker load ./demo-image.tar
+./bin/minibox load ./demo-image.tar
 ```
 
 ---
@@ -241,10 +241,10 @@ Import an image tar archive created by `save`.
 
 Fetch logs for a container.
 
-**Usage:** `mini-docker logs <containerID>`
+**Usage:** `minibox logs <containerID>`
 
 ```bash
-./bin/mini-docker logs a1b2c3d4
+./bin/minibox logs a1b2c3d4
 ```
 
 ---
@@ -253,7 +253,7 @@ Fetch logs for a container.
 
 Run a command inside a running container by entering its namespaces.
 
-**Usage:** `mini-docker exec [-it] <containerID> <cmd...>`
+**Usage:** `minibox exec [-it] <containerID> <cmd...>`
 
 - `-it` attaches stdin/stdout/stderr to your terminal (requires `nsenter` from `util-linux`).
 
@@ -261,10 +261,10 @@ Examples:
 
 ```bash
 # Non-interactive
-./bin/mini-docker exec a1b2c3d4 ls -la /
+./bin/minibox exec a1b2c3d4 ls -la /
 
 # Interactive shell
-./bin/mini-docker exec -it a1b2c3d4 /bin/sh
+./bin/minibox exec -it a1b2c3d4 /bin/sh
 ```
 
 ---
@@ -273,10 +273,10 @@ Examples:
 
 Stop a running container (SIGTERM to container process).
 
-**Usage:** `mini-docker stop [-t seconds] <containerID>`
+**Usage:** `minibox stop [-t seconds] <containerID>`
 
 ```bash
-./bin/mini-docker stop a1b2c3d4
+./bin/minibox stop a1b2c3d4
 ```
 
 ---
@@ -285,10 +285,10 @@ Stop a running container (SIGTERM to container process).
 
 Force-kill a running container (SIGKILL).
 
-**Usage:** `mini-docker kill <containerID>`
+**Usage:** `minibox kill <containerID>`
 
 ```bash
-./bin/mini-docker kill a1b2c3d4
+./bin/minibox kill a1b2c3d4
 ```
 
 ---
@@ -297,10 +297,10 @@ Force-kill a running container (SIGKILL).
 
 Remove a container record and its data directory on the daemon.
 
-**Usage:** `mini-docker rm <containerID>`
+**Usage:** `minibox rm <containerID>`
 
 ```bash
-./bin/mini-docker rm a1b2c3d4
+./bin/minibox rm a1b2c3d4
 ```
 
 ---
@@ -309,10 +309,10 @@ Remove a container record and its data directory on the daemon.
 
 Remove an image from the local index (by repository name as registered at build time).
 
-**Usage:** `mini-docker rmi <image>`
+**Usage:** `minibox rmi <image>`
 
 ```bash
-./bin/mini-docker rmi myapp
+./bin/minibox rmi myapp
 ```
 
 ---
@@ -322,7 +322,7 @@ Remove an image from the local index (by repository name as registered at build 
 Remove orphaned blobs, teardown stale lazy FUSE mounts, clean extracted layers, and tmp under the data root.
 
 ```bash
-./bin/mini-docker system prune
+./bin/minibox system prune
 ```
 
 ---
@@ -332,7 +332,7 @@ Remove orphaned blobs, teardown stale lazy FUSE mounts, clean extracted layers, 
 Terminal 1 — start daemon:
 
 ```bash
-./bin/mini-dockerd
+./bin/miniboxd
 ```
 
 Terminal 2 — use CLI:
@@ -340,21 +340,21 @@ Terminal 2 — use CLI:
 ```bash
 export PATH="$PWD/bin:$PATH"   # optional
 
-mini-docker ping
-mini-docker build -t demo .
-mini-docker run demo
-mini-docker ps
-mini-docker stop <container-id>
-mini-docker rm <container-id>
+minibox ping
+minibox build -t demo .
+minibox run demo
+minibox ps
+minibox stop <container-id>
+minibox rm <container-id>
 ```
 
 With API token (daemon and CLI):
 
 ```bash
-export MINI_DOCKER_API_TOKEN="$(openssl rand -hex 16)"
-MINI_DOCKER_API_TOKEN="$MINI_DOCKER_API_TOKEN" ./bin/mini-dockerd &
-export MINI_DOCKER_API_TOKEN="$MINI_DOCKER_API_TOKEN"
-mini-docker ping
+export MINIBOX_API_TOKEN="$(openssl rand -hex 16)"
+MINIBOX_API_TOKEN="$MINIBOX_API_TOKEN" ./bin/miniboxd &
+export MINIBOX_API_TOKEN="$MINIBOX_API_TOKEN"
+minibox ping
 ```
 
 ---
@@ -367,11 +367,11 @@ Container IDs are **8 hexadecimal characters** (e.g. `a1b2c3d4`). Use the ID ret
 
 ## Troubleshooting
 
-- **Connection refused:** Start `mini-dockerd` or set `MINI_DOCKER_API` to the correct URL.
-- **401 Unauthorized:** Set `MINI_DOCKER_API_TOKEN` on the client to match the daemon’s `MINI_DOCKER_API_TOKEN`.
-- **Build context rejected:** Ensure the context directory is under a path allowed by `MINI_DOCKER_BUILD_PREFIXES` on the daemon.
-- **Wipe local state (`./data`):** If the daemon created root-owned files, run from the repo root: `sudo ./scripts/clean-data.sh` (or set `MINI_DOCKER_DATA_ROOT` to point at another directory to clean). This deletes images, layers, containers, and blobs under that path and recreates an empty directory.
-- **`could not unshare mount namespace: operation not permitted`:** The child skips a second `unshare` when the daemon sets `MINI_DOCKER_CHILD_NEWNS=1`. Rebuild and restart the daemon.
+- **Connection refused:** Start `miniboxd` or set `MINIBOX_API` to the correct URL.
+- **401 Unauthorized:** Set `MINIBOX_API_TOKEN` on the client to match the daemon’s `MINIBOX_API_TOKEN`.
+- **Build context rejected:** Ensure the context directory is under a path allowed by `MINIBOX_BUILD_PREFIXES` on the daemon.
+- **Wipe local state (`./data`):** If the daemon created root-owned files, run from the repo root: `sudo ./scripts/clean-data.sh` (or set `MINIBOX_DATA_ROOT` to point at another directory to clean). This deletes images, layers, containers, and blobs under that path and recreates an empty directory.
+- **`could not unshare mount namespace: operation not permitted`:** The child skips a second `unshare` when the daemon sets `MINIBOX_CHILD_NEWNS=1`. Rebuild and restart the daemon.
 - **`Error remounting root private: operation not permitted` / `no such process` (network):** Rootless kernels often deny `MS_PRIVATE` on `/`. The runtime now bind-mounts `rootfs` first and marks that mount private, with fallbacks; the “no such process” message was the container exiting early—rebuild after this fix.
 
 ---

@@ -14,20 +14,20 @@ This project is intentionally more complex than `testing/nodeapp` and is designe
 From repo root:
 
 ```bash
-./bin/mini-docker build -t complex-mini ./testing/complex-minibox-app
+./bin/minibox build -t complex-mini ./testing/complex-minibox-app
 ```
 
 ## Run (foreground)
 
 ```bash
-./bin/mini-docker run -p 3001:3000 complex-mini
+./bin/minibox run -p 3001:3000 complex-mini
 ```
 
 ## Run (detached)
 
 ```bash
-./bin/mini-docker run -d -p 3001:3000 complex-mini
-./bin/mini-docker ps
+./bin/minibox run -d -p 3001:3000 complex-mini
+./bin/minibox ps
 ```
 
 ## Verify endpoints

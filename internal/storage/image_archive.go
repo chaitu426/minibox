@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/models"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/models"
 )
 
 type imageArchiveMeta struct {

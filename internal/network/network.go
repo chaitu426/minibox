@@ -11,11 +11,11 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
-	"github.com/chaitu426/mini-docker/internal/security"
+	"github.com/chaitu426/minibox/internal/security"
 )
 
 const (
-	BridgeName = "mini-docker0"
+	BridgeName = "minibox0"
 	Subnet     = "172.19.0"
 	BridgeIP   = "172.19.0.1/24"
 	GatewayIP  = "172.19.0.1"
@@ -30,7 +30,7 @@ func AllocateIP() string {
 	return fmt.Sprintf("%s.%d", Subnet, n)
 }
 
-// SetupBridge creates the mini-docker0 bridge and enables NAT.
+// SetupBridge creates the minibox0 bridge and enables NAT.
 func SetupBridge() error {
 	// 1. Create Bridge if it doesn't exist
 	la := netlink.NewLinkAttrs()

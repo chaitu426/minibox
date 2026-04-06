@@ -8,16 +8,16 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/models"
-	"github.com/chaitu426/mini-docker/internal/security"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/models"
+	"github.com/chaitu426/minibox/internal/security"
 	"golang.org/x/sys/unix"
 )
 
 // envChildMountNS is set by the daemon when spawning the child with CLONE_NEWNS. A second
 // unshare(CLONE_NEWNS) in that child often fails with EPERM; we only unshare when this is
-// unset (e.g. bare `mini-docker child` for defense in depth).
-const envChildMountNS = "MINI_DOCKER_CHILD_NEWNS"
+// unset (e.g. bare `minibox child` for defense in depth).
+const envChildMountNS = "MINIBOX_CHILD_NEWNS"
 
 func RunContainer() {
 	if len(os.Args) < 8 {
@@ -61,7 +61,7 @@ func RunContainer() {
 	}
 
 	// Cgroups V2 limits deployment
-	cgPath := filepath.Join("/sys/fs/cgroup/mini-docker", containerID)
+	cgPath := filepath.Join("/sys/fs/cgroup/minibox", containerID)
 	os.MkdirAll(cgPath, 0755)
 
 	if memMB != "0" {

@@ -17,7 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/chaitu426/mini-docker/internal/utils"
+	"github.com/chaitu426/minibox/internal/utils"
 )
 
 func exitf(code int, format string, args ...any) {
@@ -25,9 +25,9 @@ func exitf(code int, format string, args ...any) {
 	os.Exit(code)
 }
 
-// apiBase returns the daemon URL (override with MINI_DOCKER_API, e.g. http://127.0.0.1:8080).
+// apiBase returns the daemon URL (override with MINIBOX_API, e.g. http://127.0.0.1:8080).
 func apiBase() string {
-	if b := os.Getenv("MINI_DOCKER_API"); b != "" {
+	if b := os.Getenv("MINIBOX_API"); b != "" {
 		return strings.TrimSuffix(strings.TrimSpace(b), "/")
 	}
 	return "http://127.0.0.1:8080"
@@ -38,9 +38,9 @@ func httpClient() *http.Client {
 	return &http.Client{Timeout: 60 * time.Second}
 }
 
-// apiDo sends the request, adding Authorization when MINI_DOCKER_API_TOKEN is set.
+// apiDo sends the request, adding Authorization when MINIBOX_API_TOKEN is set.
 func apiDo(req *http.Request) (*http.Response, error) {
-	if t := strings.TrimSpace(os.Getenv("MINI_DOCKER_API_TOKEN")); t != "" {
+	if t := strings.TrimSpace(os.Getenv("MINIBOX_API_TOKEN")); t != "" {
 		req.Header.Set("Authorization", "Bearer "+t)
 	}
 	return httpClient().Do(req)
@@ -75,7 +75,7 @@ func apiPOSTStream(path, contentType string, body io.Reader) (*http.Response, er
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if t := strings.TrimSpace(os.Getenv("MINI_DOCKER_API_TOKEN")); t != "" {
+	if t := strings.TrimSpace(os.Getenv("MINIBOX_API_TOKEN")); t != "" {
 		req.Header.Set("Authorization", "Bearer "+t)
 	}
 	return (&http.Client{Timeout: 0}).Do(req)
@@ -105,7 +105,7 @@ func readHTTPError(resp *http.Response) string {
 
 func printMainHelp() {
 	utils.Banner()
-	fmt.Println("Usage: mini-docker <command> [args]")
+	fmt.Println("Usage: minibox <command> [args]")
 	fmt.Println()
 	fmt.Println("Core:")
 	fmt.Println("  run, exec, ps, logs, stop, kill, rm, stats")
@@ -121,7 +121,7 @@ func printMainHelp() {
 
 func buildCommand() {
 	if len(os.Args) < 4 || os.Args[2] != "-t" {
-		exitf(2, "Usage: mini-docker build -t <image> <path/to/dir>")
+		exitf(2, "Usage: minibox build -t <image> <path/to/dir>")
 	}
 	imageName := os.Args[3]
 	dir := "."
@@ -151,7 +151,7 @@ func buildCommand() {
 
 	jsonData, _ := json.Marshal(reqBody)
 
-	resp, err := apiPOST("/containers/build", "application/json", bytes.NewBuffer(jsonData))
+	resp, err := apiPOSTStream("/containers/build", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		exitf(1, "Connection to daemon failed: %v", err)
 	}
@@ -188,7 +188,7 @@ func buildCommand() {
 
 func logsCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker logs <containerID>")
+		exitf(2, "Usage: minibox logs <containerID>")
 	}
 	resp, err := apiGET("/containers/logs?id=" + url.QueryEscape(os.Args[2]))
 	if err != nil {
@@ -203,7 +203,7 @@ func logsCommand() {
 
 func runCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] <image> [command...]")
+		exitf(2, "Usage: minibox run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] <image> [command...]")
 	}
 
 	detached := false
@@ -249,7 +249,7 @@ func runCommand() {
 doneFlags:
 
 	if i >= len(os.Args) {
-		exitf(2, "Usage: mini-docker run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] <image> [command...]")
+		exitf(2, "Usage: minibox run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] <image> [command...]")
 	}
 
 	image := os.Args[i]
@@ -525,7 +525,7 @@ func imagesCommand() {
 
 func saveCommand() {
 	if len(os.Args) < 4 {
-		exitf(2, "Usage: mini-docker save <image> <output.tar>")
+		exitf(2, "Usage: minibox save <image> <output.tar>")
 	}
 	image := os.Args[2]
 	outPath, err := filepath.Abs(os.Args[3])
@@ -545,7 +545,7 @@ func saveCommand() {
 
 func loadCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker load <input.tar>")
+		exitf(2, "Usage: minibox load <input.tar>")
 	}
 	inPath, err := filepath.Abs(os.Args[2])
 	if err != nil {
@@ -564,7 +564,7 @@ func loadCommand() {
 
 func rmiCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker rmi <image>")
+		exitf(2, "Usage: minibox rmi <image>")
 	}
 	resp, err := apiPOST("/images/remove?image="+url.QueryEscape(os.Args[2]), "application/x-www-form-urlencoded", nil)
 	if err != nil {
@@ -579,11 +579,11 @@ func rmiCommand() {
 
 func stopCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker stop [-t seconds] <containerID>")
+		exitf(2, "Usage: minibox stop [-t seconds] <containerID>")
 	}
 	id := os.Args[2]
 	timeout := ""
-	// Support: mini-docker stop -t 10 <id>
+	// Support: minibox stop -t 10 <id>
 	if len(os.Args) >= 5 && os.Args[2] == "-t" {
 		timeout = os.Args[3]
 		id = os.Args[4]
@@ -605,7 +605,7 @@ func stopCommand() {
 
 func killCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker kill <containerID>")
+		exitf(2, "Usage: minibox kill <containerID>")
 	}
 	resp, err := apiPOST("/containers/kill?id="+url.QueryEscape(os.Args[2]), "application/x-www-form-urlencoded", nil)
 	if err != nil {
@@ -620,7 +620,7 @@ func killCommand() {
 
 func rmCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker rm <containerID>")
+		exitf(2, "Usage: minibox rm <containerID>")
 	}
 	resp, err := apiPOST("/containers/remove?id="+url.QueryEscape(os.Args[2]), "application/x-www-form-urlencoded", nil)
 	if err != nil {
@@ -670,7 +670,7 @@ func progressBar(percent float64, width int) string {
 func statsCommand() {
 
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: mini-docker stats <containerID>")
+		exitf(2, "Usage: minibox stats <containerID>")
 	}
 	id := os.Args[2]
 
@@ -736,7 +736,7 @@ func statsCommand() {
 
 func systemCommand() {
 	if len(os.Args) < 3 || os.Args[2] != "prune" {
-		exitf(2, "Usage: mini-docker system prune")
+		exitf(2, "Usage: minibox system prune")
 	}
 
 	resp, err := apiPOST("/system/prune", "application/json", nil)
@@ -767,7 +767,7 @@ func systemCommand() {
 
 func execCommand() {
 	if len(os.Args) < 4 {
-		exitf(2, "Usage: mini-docker exec [-it] <containerID> <cmd...>")
+		exitf(2, "Usage: minibox exec [-it] <containerID> <cmd...>")
 	}
 
 	i := 2
@@ -777,7 +777,7 @@ func execCommand() {
 		i++
 	}
 	if len(os.Args) <= i+1 {
-		exitf(2, "Usage: mini-docker exec [-it] <containerID> <cmd...>")
+		exitf(2, "Usage: minibox exec [-it] <containerID> <cmd...>")
 	}
 	id := os.Args[i]
 	cmdArgs := os.Args[i+1:]
@@ -842,7 +842,7 @@ func main() {
 		return
 	}
 	if command == "--version" || command == "version" {
-		fmt.Println("mini-docker dev")
+		fmt.Println("minibox dev")
 		return
 	}
 

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/storage"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/storage"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )

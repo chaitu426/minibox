@@ -8,8 +8,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/models"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/models"
 )
 
 type PruneReport struct {

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chaitu426/mini-docker/internal/config"
+	"github.com/chaitu426/minibox/internal/config"
 )
 
 type ContainerInfo struct {

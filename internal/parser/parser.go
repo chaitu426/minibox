@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chaitu426/mini-docker/internal/models"
+	"github.com/chaitu426/minibox/internal/models"
 )
 
 // ParseBoxfile reads a MiniBox Boxfile and parses it into a models.Cfile struct.

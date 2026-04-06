@@ -11,11 +11,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/daemon"
-	"github.com/chaitu426/mini-docker/internal/network"
-	"github.com/chaitu426/mini-docker/internal/runtime"
-	"github.com/chaitu426/mini-docker/internal/storage"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/daemon"
+	"github.com/chaitu426/minibox/internal/network"
+	"github.com/chaitu426/minibox/internal/runtime"
+	"github.com/chaitu426/minibox/internal/storage"
 )
 
 func main() {

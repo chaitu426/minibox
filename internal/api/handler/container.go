@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/runtime"
-	"github.com/chaitu426/mini-docker/internal/security"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/runtime"
+	"github.com/chaitu426/minibox/internal/security"
 )
 
 type RunRequest struct {

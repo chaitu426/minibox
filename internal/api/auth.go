@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/chaitu426/mini-docker/internal/config"
+	"github.com/chaitu426/minibox/internal/config"
 )
 
-// requireAPIToken returns middleware that enforces MINI_DOCKER_API_TOKEN when set.
+// requireAPIToken returns middleware that enforces MINIBOX_API_TOKEN when set.
 func requireAPIToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := config.APIToken
@@ -23,7 +23,7 @@ func requireAPIToken(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Set("WWW-Authenticate", `Bearer realm="mini-docker"`)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="minibox"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	})
 }

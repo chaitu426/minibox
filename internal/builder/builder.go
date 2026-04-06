@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/models"
-	"github.com/chaitu426/mini-docker/internal/storage"
-	"github.com/chaitu426/mini-docker/internal/utils"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/models"
+	"github.com/chaitu426/minibox/internal/storage"
+	"github.com/chaitu426/minibox/internal/utils"
 )
 
 var blockPrefixRe = regexp.MustCompile(`^\[[A-Za-z0-9._-]+\]\s`)

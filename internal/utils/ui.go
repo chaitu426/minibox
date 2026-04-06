@@ -58,7 +58,7 @@ func PrintError(format string, a ...interface{}) {
 
 func Banner() {
 	if !colorEnabled() {
-		fmt.Println("mini-docker")
+		fmt.Println("minibox")
 		fmt.Println("Low-level container engine for Linux")
 		fmt.Println()
 		return
@@ -76,5 +76,5 @@ func Banner() {
 }
 
 func colorEnabled() bool {
-	return os.Getenv("NO_COLOR") == "" && os.Getenv("MINI_DOCKER_PLAIN") == ""
+	return os.Getenv("NO_COLOR") == "" && os.Getenv("MINIBOX_PLAIN") == ""
 }

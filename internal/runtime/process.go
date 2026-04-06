@@ -17,13 +17,13 @@ import (
 
 	"sync"
 
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/models"
-	"github.com/chaitu426/mini-docker/internal/network"
-	"github.com/chaitu426/mini-docker/internal/security"
-	"github.com/chaitu426/mini-docker/internal/storage"
-	"github.com/chaitu426/mini-docker/internal/storage/lazy"
-	"github.com/chaitu426/mini-docker/internal/utils"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/models"
+	"github.com/chaitu426/minibox/internal/network"
+	"github.com/chaitu426/minibox/internal/security"
+	"github.com/chaitu426/minibox/internal/storage"
+	"github.com/chaitu426/minibox/internal/storage/lazy"
+	"github.com/chaitu426/minibox/internal/utils"
 )
 
 var (
@@ -62,7 +62,7 @@ func RunCommand(ctx context.Context, containerID string, image string, memMB int
 	} else {
 		cmd = exec.CommandContext(ctx, "/proc/self/exe", args...)
 	}
-	cmd.Env = append(os.Environ(), "MINI_DOCKER_CHILD_NEWNS=1")
+	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
 
 	// Prepare container directories and permissions for the rootless child
 	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
@@ -222,7 +222,7 @@ func RunCommandStream(ctx context.Context, containerID string, image string, mem
 
 	args := append([]string{"child", containerID, image, strconv.Itoa(memMB), strconv.Itoa(cpu), string(configJSON), string(layersJSON)}, cmdArgs...)
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
-	cmd.Env = append(os.Environ(), "MINI_DOCKER_CHILD_NEWNS=1")
+	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
 
 	// Prepare container directories and permissions for the rootless child
 	containerPath := filepath.Join(config.DataRoot, "containers", containerID)

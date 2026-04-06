@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/chaitu426/mini-docker/internal/builder"
-	"github.com/chaitu426/mini-docker/internal/config"
-	"github.com/chaitu426/mini-docker/internal/parser"
-	"github.com/chaitu426/mini-docker/internal/security"
+	"github.com/chaitu426/minibox/internal/builder"
+	"github.com/chaitu426/minibox/internal/config"
+	"github.com/chaitu426/minibox/internal/parser"
+	"github.com/chaitu426/minibox/internal/security"
 )
 
 type BuildRequest struct {
