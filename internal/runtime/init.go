@@ -1,0 +1,85 @@
+package runtime
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+)
+
+// RunInit is a tiny init process for PID 1 in the container.
+// It forwards signals to the child and reaps zombies.
+func RunInit() {
+	if len(os.Args) < 4 || os.Args[2] != "--" {
+		fmt.Fprintln(os.Stderr, "invalid init arguments")
+		os.Exit(1)
+	}
+	cmdArgs := os.Args[3:]
+	os.Exit(runInitCmd(cmdArgs, nil))
+}
+
+// runInitCmd runs the workload as PID1 logic (signal forwarding + zombie reaping).
+// If env is nil, the current process environment is used.
+func runInitCmd(cmdArgs []string, env []string) int {
+	if len(cmdArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "init: no command provided")
+		return 127
+	}
+	binary, err := exec.LookPath(cmdArgs[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init: command not found: %v\n", err)
+		return 127
+	}
+
+	cmd := exec.Command(binary, cmdArgs[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env != nil {
+		cmd.Env = env
+	}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "init: failed to start child: %v\n", err)
+		return 1
+	}
+
+	sigCh := make(chan os.Signal, 16)
+	signal.Notify(sigCh)
+	defer signal.Stop(sigCh)
+	go func() {
+		for s := range sigCh {
+			if sig, ok := s.(syscall.Signal); ok {
+				_ = syscall.Kill(-cmd.Process.Pid, sig)
+			}
+		}
+	}()
+
+	// Reap any zombies while waiting for main child.
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, 0, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err == syscall.ECHILD {
+			break
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "init: wait error: %v\n", err)
+			break
+		}
+		if pid == cmd.Process.Pid {
+			if ws.Exited() {
+				return ws.ExitStatus()
+			}
+			if ws.Signaled() {
+				return 128 + int(ws.Signal())
+			}
+			return 1
+		}
+	}
+	return 0
+}

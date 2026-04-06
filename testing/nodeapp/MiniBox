@@ -1,0 +1,22 @@
+BASE alpine
+
+BLOCK runtime
+    pkg nodejs
+    pkg npm
+
+BLOCK source 
+    workdir /app
+    copy . /app
+
+BLOCK deps
+    NEED runtime
+    NEED source
+    auto-deps
+
+BLOCK config
+    NEED deps
+    env PORT=3000
+    env NODE_ENV=production
+    port 3000
+
+START node index.js

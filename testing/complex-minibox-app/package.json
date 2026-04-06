@@ -1,0 +1,14 @@
+{
+  "name": "complex-minibox-app",
+  "version": "1.0.0",
+  "description": "Complex MiniBox integration sample app",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "smoke": "sh ./scripts/smoke.sh"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

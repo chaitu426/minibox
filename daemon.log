@@ -1,0 +1,12 @@
+nohup: ignoring input
+➜ Indexing blobs in /var/lib/mini-docker/blobs/sha256 for lazy loading...
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/11d065b78c0b43bda634046daac22cdec6fb7d38bf8c9867595a1a4af6e1241a.index.json
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/14c34b4475911438a29c7cc804856c0f3b07344cd83d2da299ef2c545dff0688.index.json
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/2b28a361bea1dd2729a3fb534d037d01a1f3e97df25a11be5452705f545e058d.index.json
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/4ec1506acacdd370cc7780f9615b6120f4241a554ea69382182a49ae1599c833.index.json
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/a3b94d88c8a16559a72492ec882ba9d7eab6004e6169f4f3e4f3e5cf97a06e7b.index.json
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/cb0a0a2e15058ec8619bd8802eef161443da4e624918da1ab7adeab3488f8ecc.index.json
+➜ Generated OCI Index: /var/lib/mini-docker/alpine.tar.gz.index.json
+[network] Bridge mini-docker0 ready with IP 172.19.0.1/24
+Daemon running on port 8080
+➜ Generated OCI Index: /var/lib/mini-docker/blobs/sha256/fea3644c8e7b2dcb60965f6e99a1105be8207bd1d16103f37ac6a89b4f8040b5.index.json

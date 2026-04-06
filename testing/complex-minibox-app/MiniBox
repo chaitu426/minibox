@@ -1,0 +1,36 @@
+BASE alpine
+
+BLOCK runtime
+    pkg nodejs
+    pkg npm
+
+BLOCK layout
+    workdir /workspace
+    run mkdir -p /workspace/src/routes /workspace/src/services /workspace/public /workspace/scripts /workspace/data
+
+BLOCK source
+    NEED layout
+    copy . /workspace
+
+BLOCK deps
+    NEED runtime
+    NEED source
+    auto-deps
+ 
+BLOCK permissions
+    NEED deps
+    NEED source
+    run chmod +x /workspace/scripts/smoke.sh
+
+BLOCK config
+    NEED permissions
+    env PORT=3000
+    env NODE_ENV=production
+    env CACHE_TTL_MS=9000
+    env WORKER_INTERVAL_MS=2500
+    env FEATURE_BATCHING=true
+    port 3000
+
+HEALTHCHECK --interval=20 /bin/sh -c "wget -qO- http://127.0.0.1:3000/health | grep -q '\"ok\":true'"
+
+START node index.js

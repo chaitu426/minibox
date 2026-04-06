@@ -1,0 +1,465 @@
+package runtime
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"sync"
+
+	"github.com/chaitu426/mini-docker/internal/config"
+	"github.com/chaitu426/mini-docker/internal/models"
+	"github.com/chaitu426/mini-docker/internal/network"
+	"github.com/chaitu426/mini-docker/internal/security"
+	"github.com/chaitu426/mini-docker/internal/storage"
+	"github.com/chaitu426/mini-docker/internal/storage/lazy"
+	"github.com/chaitu426/mini-docker/internal/utils"
+)
+
+var (
+	configCache = make(map[string]*models.OCIConfig)
+	cacheMu     sync.RWMutex
+)
+
+// RunCommand runs a container and returns all output at once (used for detached mode).
+func RunCommand(ctx context.Context, containerID string, image string, memMB int, cpu int, detached bool, portMap map[string]string, cmdArgs []string) ([]byte, error) {
+	if !security.ValidContainerID(containerID) {
+		return nil, fmt.Errorf("invalid container id")
+	}
+	if len(cmdArgs) == 0 {
+		return nil, fmt.Errorf("no command provided")
+	}
+
+	// Resolved Image Metadata (Phase 3 Optimization: Pre-parse for child)
+	imgConfig, err := ResolveImageConfig(image)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve image config: %v", err)
+	}
+	configJSON, _ := json.Marshal(imgConfig)
+
+	lowerDirs, err := resolveImageLayers(image)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve image layers: %v", err)
+	}
+	layersJSON, _ := json.Marshal(lowerDirs)
+
+	args := append([]string{"child", containerID, image, strconv.Itoa(memMB), strconv.Itoa(cpu), string(configJSON), string(layersJSON)}, cmdArgs...)
+	// Detached containers must not inherit the request context; the HTTP handler returns
+	// immediately and cancels it, which would kill the container process.
+	var cmd *exec.Cmd
+	if detached {
+		cmd = exec.Command("/proc/self/exe", args...)
+	} else {
+		cmd = exec.CommandContext(ctx, "/proc/self/exe", args...)
+	}
+	cmd.Env = append(os.Environ(), "MINI_DOCKER_CHILD_NEWNS=1")
+
+	// Prepare container directories and permissions for the rootless child
+	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
+	os.MkdirAll(filepath.Join(containerPath, "upper"), 0755)
+	os.MkdirAll(filepath.Join(containerPath, "work"), 0755)
+	os.MkdirAll(filepath.Join(containerPath, "rootfs"), 0755)
+	// Container runs as host root for now
+	_ = exec.Command("chown", "-R", "0:0", containerPath).Run()
+
+	// Set up OverlayFS from host root before starting child
+	if err := MountRootfs(containerID, lowerDirs); err != nil {
+		return nil, fmt.Errorf("failed to mount rootfs: %v", err)
+	}
+
+	logFile, _ := os.Create(filepath.Join(containerPath, "container.log"))
+
+	var out bytes.Buffer
+	if detached {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	} else {
+		mwriter := io.MultiWriter(&out, logFile)
+		cmd.Stdout = mwriter
+		cmd.Stderr = mwriter
+	}
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWUTS |
+			syscall.CLONE_NEWNS |
+			syscall.CLONE_NEWNET,
+	}
+
+	err = cmd.Start()
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Set up container networking
+	ip := network.AllocateIP()
+	if netErr := network.SetupContainerNetwork(cmd.Process.Pid, containerID, ip, portMap); netErr != nil {
+		fmt.Printf("[network] Warning: network setup failed: %v\n", netErr)
+	}
+
+	info := ContainerInfo{
+		ID:        containerID,
+		Image:     image,
+		Command:   strings.Join(cmdArgs, " "),
+		PID:       cmd.Process.Pid,
+		Status:    "running",
+		Health:    "none",
+		CreatedAt: time.Now(),
+		ExitCode:  0,
+		Ports:     portMap,
+	}
+	RegisterContainer(info)
+	startHealthMonitor(containerID, cmd.Process.Pid, imgConfig)
+
+	if detached {
+		go func() {
+			err := cmd.Wait()
+			MarkContainerExited(containerID, exitCode(err))
+			network.TeardownContainerNetwork(containerID, portMap, ip)
+			logFile.Close()
+		}()
+		return []byte(containerID + "\n"), nil
+	}
+
+	err = cmd.Wait()
+	MarkContainerExited(containerID, exitCode(err))
+	network.TeardownContainerNetwork(containerID, portMap, ip)
+	logFile.Close()
+
+	if err != nil && ctx.Err() != nil {
+		return out.Bytes(), fmt.Errorf("container run aborted by client: %w", ctx.Err())
+	}
+	return out.Bytes(), err
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
+			if ws.Signaled() {
+				return 128 + int(ws.Signal())
+			}
+			return ws.ExitStatus()
+		}
+	}
+	return 1
+}
+
+func startHealthMonitor(containerID string, pid int, cfg *models.OCIConfig) {
+	if cfg == nil || cfg.Config.Labels == nil {
+		return
+	}
+	joined := cfg.Config.Labels["mini.healthcheck.cmd"]
+	if joined == "" || pid <= 0 {
+		return
+	}
+	parts := strings.Split(joined, "\x1f")
+	if len(parts) == 0 {
+		return
+	}
+	cmdStr := strings.Join(parts, " ")
+	interval := 30
+	if v := cfg.Config.Labels["mini.healthcheck.interval"]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			interval = n
+		}
+	}
+	_ = UpdateContainerHealth(containerID, "starting")
+	go func() {
+		t := time.NewTicker(time.Duration(interval) * time.Second)
+		defer t.Stop()
+		for range t.C {
+			cs := GetAllContainers()
+			c, ok := cs[containerID]
+			if !ok || c.Status != "running" || c.PID <= 0 {
+				return
+			}
+			cmd := exec.Command("nsenter", "-t", strconv.Itoa(pid), "-m", "-u", "-n", "-i", "-p", "--", "/bin/sh", "-c", cmdStr)
+			if err := cmd.Run(); err != nil {
+				_ = UpdateContainerHealth(containerID, "unhealthy")
+			} else {
+				_ = UpdateContainerHealth(containerID, "healthy")
+			}
+		}
+	}()
+}
+
+// RunCommandStream runs a container in foreground mode, streaming output directly to out in real-time.
+func RunCommandStream(ctx context.Context, containerID string, image string, memMB int, cpu int, portMap map[string]string, cmdArgs []string, out io.Writer) error {
+	if !security.ValidContainerID(containerID) {
+		return fmt.Errorf("invalid container id")
+	}
+	if len(cmdArgs) == 0 {
+		return fmt.Errorf("no command provided")
+	}
+
+	// Resolved Image Metadata (Phase 3 Optimization: Pre-parse for child)
+	imgConfig, err := ResolveImageConfig(image)
+	if err != nil {
+		return fmt.Errorf("failed to resolve image config: %v", err)
+	}
+	configJSON, _ := json.Marshal(imgConfig)
+
+	lowerDirs, err := resolveImageLayers(image)
+	if err != nil {
+		return fmt.Errorf("failed to resolve image layers: %v", err)
+	}
+	layersJSON, _ := json.Marshal(lowerDirs)
+
+	args := append([]string{"child", containerID, image, strconv.Itoa(memMB), strconv.Itoa(cpu), string(configJSON), string(layersJSON)}, cmdArgs...)
+	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
+	cmd.Env = append(os.Environ(), "MINI_DOCKER_CHILD_NEWNS=1")
+
+	// Prepare container directories and permissions for the rootless child
+	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
+	os.MkdirAll(filepath.Join(containerPath, "upper"), 0755)
+	os.MkdirAll(filepath.Join(containerPath, "work"), 0755)
+	os.MkdirAll(filepath.Join(containerPath, "rootfs"), 0755)
+	// Container runs as host root for now
+	_ = exec.Command("chown", "-R", "0:0", containerPath).Run()
+
+	// Set up OverlayFS from host root before starting child
+	if err := MountRootfs(containerID, lowerDirs); err != nil {
+		return fmt.Errorf("failed to mount rootfs: %v", err)
+	}
+
+	logFile, _ := os.Create(filepath.Join(containerPath, "container.log"))
+	defer logFile.Close()
+
+	mwriter := io.MultiWriter(out, logFile)
+	cmd.Stdout = mwriter
+	cmd.Stderr = mwriter
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWUTS |
+			syscall.CLONE_NEWNS |
+			syscall.CLONE_NEWNET,
+	}
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	// Set up container networking
+	ip := network.AllocateIP()
+	if netErr := network.SetupContainerNetwork(cmd.Process.Pid, containerID, ip, portMap); netErr != nil {
+		fmt.Fprintf(out, "[network] Warning: network setup failed: %v\n", netErr)
+	} else {
+		fmt.Fprintf(out, "[network] Container IP: %s\n", ip)
+	}
+
+	info := ContainerInfo{
+		ID:        containerID,
+		Image:     image,
+		Command:   strings.Join(cmdArgs, " "),
+		PID:       cmd.Process.Pid,
+		Status:    "running",
+		Health:    "none",
+		CreatedAt: time.Now(),
+		ExitCode:  0,
+		Ports:     portMap,
+	}
+	RegisterContainer(info)
+	startHealthMonitor(containerID, cmd.Process.Pid, imgConfig)
+
+	err = cmd.Wait()
+	MarkContainerExited(containerID, exitCode(err))
+	network.TeardownContainerNetwork(containerID, portMap, ip)
+	UnmountRootfs(containerID)
+	return err
+}
+
+// MountRootfs prepares the layered filesystem for the container.
+func MountRootfs(containerID string, lowerDirs []string) error {
+	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
+	upperDir := filepath.Join(containerPath, "upper")
+	workDir := filepath.Join(containerPath, "work")
+	rootfs := filepath.Join(containerPath, "rootfs")
+
+	os.MkdirAll(upperDir, 0755)
+	os.MkdirAll(workDir, 0755)
+	os.MkdirAll(rootfs, 0755)
+	os.MkdirAll(filepath.Join(upperDir, ".old_root"), 0700)
+
+	// CHOWN directories to host user so the mapped container root can access them
+	// CHOWN directories to host root
+	_ = exec.Command("chown", "-R", "0:0", containerPath).Run()
+
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", strings.Join(lowerDirs, ":"), upperDir, workDir)
+	if err := syscall.Mount("overlay", rootfs, "overlay", 0, opts); err != nil {
+		return err
+	}
+
+	// Make the mount point a mount-point itself and private for User Namespaces
+	if err := syscall.Mount(rootfs, rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("failed to bind mount rootfs: %v", err)
+	}
+	return syscall.Mount("", rootfs, "", syscall.MS_PRIVATE|syscall.MS_REC, "")
+}
+
+func resolveImageLayers(imageName string) ([]string, error) {
+	indexPath := filepath.Join(config.DataRoot, "index.json")
+	var index models.OCIImageIndex
+
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read OCI index: %v", err)
+	}
+	json.Unmarshal(data, &index)
+
+	var manifestDigest string
+	for _, m := range index.Manifests {
+		if m.Annotations["org.opencontainers.image.ref.name"] == imageName {
+			manifestDigest = strings.TrimPrefix(m.Digest, "sha256:")
+			break
+		}
+	}
+
+	if manifestDigest == "" {
+		return nil, fmt.Errorf("image %s not found in OCI index", imageName)
+	}
+
+	manifestPath := filepath.Join(config.DataRoot, "blobs", "sha256", manifestDigest)
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest %s: %v", manifestDigest, err)
+	}
+
+	var manifest models.OCIManifest
+	json.Unmarshal(manifestData, &manifest)
+
+	var layers []string
+	extractedRoot := filepath.Join(config.DataRoot, "extracted")
+	seenLayer := make(map[string]bool)
+
+	for _, l := range manifest.Layers {
+		digest := strings.TrimPrefix(l.Digest, "sha256:")
+		blobPath := filepath.Join(config.DataRoot, "blobs", "sha256", digest)
+
+		// Phase 4 Optimization: Try Lazy Loading if index exists
+		index, err := storage.GetLayerIndex(digest)
+		if err != nil && imageName == "alpine" && len(manifest.Layers) == 1 {
+			// Special case for base image if it's stored differently
+			index, err = storage.GetLayerIndex("alpine.tar.gz")
+			blobPath = filepath.Join(config.DataRoot, "alpine.tar.gz")
+		}
+
+		if err == nil {
+			// Mount lazily using FUSE
+			mountPath := filepath.Join(config.DataRoot, "lazy", digest)
+			cachePath := filepath.Join(config.DataRoot, "cache", digest)
+			fmt.Printf("➜ Lazy-mounting layer: %s\n", digest[:12])
+			if err := lazy.StartLazyMount(blobPath, mountPath, cachePath, index); err == nil {
+				if !seenLayer[mountPath] {
+					layers = append([]string{mountPath}, layers...)
+					seenLayer[mountPath] = true
+				}
+				continue
+			}
+		}
+
+		// Fallback to full extraction
+		destPath := filepath.Join(extractedRoot, digest)
+		os.MkdirAll(destPath, 0755)
+		if info, err := os.Stat(destPath); os.IsNotExist(err) || (err == nil && info.IsDir() && isDirEmpty(destPath)) {
+			fmt.Printf("➜ Extracting layer: %s\n", digest[:12])
+			if err := utils.ExtractTarGz(blobPath, destPath); err != nil {
+				return nil, fmt.Errorf("failed to extract layer %s: %v", digest, err)
+			}
+		}
+
+		if !seenLayer[destPath] {
+			layers = append([]string{destPath}, layers...)
+			seenLayer[destPath] = true
+		}
+	}
+
+	return layers, nil
+}
+
+// UnmountRootfs cleans up the layered filesystem.
+func UnmountRootfs(containerID string) {
+	rootfs := filepath.Join(config.DataRoot, "containers", containerID, "rootfs")
+	syscall.Unmount(rootfs, 0)
+}
+
+func ResolveImageConfig(imageName string) (*models.OCIConfig, error) {
+	cacheMu.RLock()
+	if cfg, ok := configCache[imageName]; ok {
+		cacheMu.RUnlock()
+		return cfg, nil
+	}
+	cacheMu.RUnlock()
+
+	indexPath := filepath.Join(config.DataRoot, "index.json")
+	var index models.OCIImageIndex
+
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read OCI index: %v", err)
+	}
+	json.Unmarshal(data, &index)
+
+	var manifestDigest string
+	for _, m := range index.Manifests {
+		if m.Annotations["org.opencontainers.image.ref.name"] == imageName {
+			manifestDigest = strings.TrimPrefix(m.Digest, "sha256:")
+			break
+		}
+	}
+
+	if manifestDigest == "" {
+		return nil, fmt.Errorf("image %s not found", imageName)
+	}
+
+	manifestPath := filepath.Join(config.DataRoot, "blobs", "sha256", manifestDigest)
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var manifest models.OCIManifest
+	json.Unmarshal(manifestData, &manifest)
+
+	configDigest := strings.TrimPrefix(manifest.Config.Digest, "sha256:")
+	configPath := filepath.Join(config.DataRoot, "blobs", "sha256", configDigest)
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var imgConfig models.OCIConfig
+	json.Unmarshal(configData, &imgConfig)
+
+	cacheMu.Lock()
+	configCache[imageName] = &imgConfig
+	cacheMu.Unlock()
+
+	return &imgConfig, nil
+}
+
+func isDirEmpty(name string) bool {
+	f, err := os.Open(name)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+
+	_, err = f.Readdirnames(1)
+	return err == io.EOF
+}
