@@ -24,7 +24,8 @@ type Instruction struct {
 // Block represents a named, independently buildable unit in the Boxfile DAG
 type Block struct {
 	Name         string
-	Needs        []string // block names this block depends on
+	Needs        []string // block names this block depends on at runtime/layer stack
+	BNeeds       []string // block names needed during build only (like COPY FROM)
 	Instructions []Instruction
 	AutoDeps     bool // whether to run auto-dependency detection
 }

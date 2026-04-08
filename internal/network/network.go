@@ -2,9 +2,11 @@ package network
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/coreos/go-iptables/iptables"
@@ -12,6 +14,11 @@ import (
 	"github.com/vishvananda/netns"
 
 	"github.com/chaitu426/minibox/internal/security"
+)
+
+var (
+	proxyMu       sync.Mutex
+	activeProxies = make(map[string][]io.Closer)
 )
 
 const (
@@ -173,6 +180,7 @@ func SetupContainerNetwork(pid int, containerID string, ip string, portMap map[s
 
 	// 5. Set up port forwarding (DNAT) rules on Host
 	ipt, _ := iptables.New()
+	var proxies []io.Closer
 	for hostPort, containerPort := range portMap {
 		dest := ip + ":" + containerPort
 		// PREROUTING (External)
@@ -181,8 +189,19 @@ func SetupContainerNetwork(pid int, containerID string, ip string, portMap map[s
 		_ = ipt.AppendUnique("nat", "OUTPUT", "-p", "tcp", "-o", "lo", "--dport", hostPort, "-j", "DNAT", "--to-destination", dest)
 		// FORWARD (Allow)
 		_ = ipt.AppendUnique("filter", "FORWARD", "-p", "tcp", "-d", ip, "--dport", containerPort, "-j", "ACCEPT")
+		
+		if proxy, err := startTCPProxy(hostPort, ip, containerPort); err == nil {
+			proxies = append(proxies, proxy)
+		} else {
+			fmt.Printf("[network] Warning: failed to start proxy for %s: %v\n", hostPort, err)
+		}
+		
 		fmt.Printf("[network] Port mapping: localhost:%s → container:%s\n", hostPort, containerPort)
 	}
+
+	proxyMu.Lock()
+	activeProxies[containerID] = proxies
+	proxyMu.Unlock()
 
 	fmt.Printf("[network] Container %s network ready — IP: %s\n", containerID, ip)
 	return nil
@@ -253,6 +272,15 @@ func TeardownContainerNetwork(containerID string, portMap map[string]string, ip 
 		_ = ipt.Delete("nat", "OUTPUT", "-p", "tcp", "-o", "lo", "--dport", hostPort, "-j", "DNAT", "--to-destination", dest)
 		_ = ipt.Delete("filter", "FORWARD", "-p", "tcp", "-d", ip, "--dport", containerPort, "-j", "ACCEPT")
 	}
+
+	proxyMu.Lock()
+	if proxies, ok := activeProxies[containerID]; ok {
+		for _, p := range proxies {
+			p.Close()
+		}
+		delete(activeProxies, containerID)
+	}
+	proxyMu.Unlock()
 }
 
 func linkExists(name string) bool {
@@ -266,4 +294,32 @@ func enableFeatureIfOff(path string) {
 		return // already enabled
 	}
 	_ = os.WriteFile(path, []byte("1"), 0644)
+}
+
+func startTCPProxy(hostPort, targetIP, targetPort string) (io.Closer, error) {
+	listener, err := net.Listen("tcp", "0.0.0.0:"+hostPort)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				backend, err := net.Dial("tcp", targetIP+":"+targetPort)
+				if err != nil {
+					return
+				}
+				defer backend.Close()
+				
+				// Copy data bidirectionally
+				go io.Copy(backend, c)
+				io.Copy(c, backend)
+			}(client)
+		}
+	}()
+	return listener, nil
 }

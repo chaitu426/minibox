@@ -31,8 +31,17 @@ var (
 	cacheMu     sync.RWMutex
 )
 
+type ContainerOptions struct {
+	MemoryMB    int               `json:"memory"`
+	CPUMax      int               `json:"cpu"`
+	CPUSet      string            `json:"cpuset"`
+	IOWeight    int               `json:"io_weight"`
+	OOMScoreAdj int               `json:"oom_score_adj"`
+	Sysctls     map[string]string `json:"sysctls"`
+}
+
 // RunCommand runs a container and returns all output at once (used for detached mode).
-func RunCommand(ctx context.Context, containerID string, image string, memMB int, cpu int, detached bool, portMap map[string]string, cmdArgs []string) ([]byte, error) {
+func RunCommand(ctx context.Context, containerID string, image string, opts ContainerOptions, detached bool, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string) ([]byte, error) {
 	if !security.ValidContainerID(containerID) {
 		return nil, fmt.Errorf("invalid container id")
 	}
@@ -47,13 +56,17 @@ func RunCommand(ctx context.Context, containerID string, image string, memMB int
 	}
 	configJSON, _ := json.Marshal(imgConfig)
 
-	lowerDirs, err := resolveImageLayers(image)
+	lowerDirs, err := ResolveImageLayers(image)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve image layers: %v", err)
 	}
 	layersJSON, _ := json.Marshal(lowerDirs)
 
-	args := append([]string{"child", containerID, image, strconv.Itoa(memMB), strconv.Itoa(cpu), string(configJSON), string(layersJSON)}, cmdArgs...)
+	volumesJSON, _ := json.Marshal(volumes)
+	userEnvJSON, _ := json.Marshal(userEnv)
+
+optsJSON, _ := json.Marshal(opts)
+	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	// Detached containers must not inherit the request context; the HTTP handler returns
 	// immediately and cancels it, which would kill the container process.
 	var cmd *exec.Cmd
@@ -199,7 +212,7 @@ func startHealthMonitor(containerID string, pid int, cfg *models.OCIConfig) {
 }
 
 // RunCommandStream runs a container in foreground mode, streaming output directly to out in real-time.
-func RunCommandStream(ctx context.Context, containerID string, image string, memMB int, cpu int, portMap map[string]string, cmdArgs []string, out io.Writer) error {
+func RunCommandStream(ctx context.Context, containerID string, image string, opts ContainerOptions, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, out io.Writer) error {
 	if !security.ValidContainerID(containerID) {
 		return fmt.Errorf("invalid container id")
 	}
@@ -214,13 +227,17 @@ func RunCommandStream(ctx context.Context, containerID string, image string, mem
 	}
 	configJSON, _ := json.Marshal(imgConfig)
 
-	lowerDirs, err := resolveImageLayers(image)
+	lowerDirs, err := ResolveImageLayers(image)
 	if err != nil {
 		return fmt.Errorf("failed to resolve image layers: %v", err)
 	}
 	layersJSON, _ := json.Marshal(lowerDirs)
 
-	args := append([]string{"child", containerID, image, strconv.Itoa(memMB), strconv.Itoa(cpu), string(configJSON), string(layersJSON)}, cmdArgs...)
+	volumesJSON, _ := json.Marshal(volumes)
+	userEnvJSON, _ := json.Marshal(userEnv)
+
+optsJSON, _ := json.Marshal(opts)
+	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
 	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
 
@@ -312,7 +329,7 @@ func MountRootfs(containerID string, lowerDirs []string) error {
 	return syscall.Mount("", rootfs, "", syscall.MS_PRIVATE|syscall.MS_REC, "")
 }
 
-func resolveImageLayers(imageName string) ([]string, error) {
+func ResolveImageLayers(imageName string) ([]string, error) {
 	indexPath := filepath.Join(config.DataRoot, "index.json")
 	var index models.OCIImageIndex
 
@@ -345,50 +362,67 @@ func resolveImageLayers(imageName string) ([]string, error) {
 
 	var layers []string
 	extractedRoot := filepath.Join(config.DataRoot, "extracted")
-	seenLayer := make(map[string]bool)
+	
+	type layerResult struct {
+		index int
+		path  string
+		err   error
+	}
+	results := make(chan layerResult, len(manifest.Layers))
 
-	for _, l := range manifest.Layers {
-		digest := strings.TrimPrefix(l.Digest, "sha256:")
-		blobPath := filepath.Join(config.DataRoot, "blobs", "sha256", digest)
+	for i, l := range manifest.Layers {
+		go func(idx int, layer models.OCIDescriptor) {
+			digest := strings.TrimPrefix(layer.Digest, "sha256:")
+			blobPath := filepath.Join(config.DataRoot, "blobs", "sha256", digest)
 
-		// Phase 4 Optimization: Try Lazy Loading if index exists
-		index, err := storage.GetLayerIndex(digest)
-		if err != nil && imageName == "alpine" && len(manifest.Layers) == 1 {
-			// Special case for base image if it's stored differently
-			index, err = storage.GetLayerIndex("alpine.tar.gz")
-			blobPath = filepath.Join(config.DataRoot, "alpine.tar.gz")
-		}
-
-		if err == nil {
-			// Mount lazily using FUSE
-			mountPath := filepath.Join(config.DataRoot, "lazy", digest)
-			cachePath := filepath.Join(config.DataRoot, "cache", digest)
-			fmt.Printf("➜ Lazy-mounting layer: %s\n", digest[:12])
-			if err := lazy.StartLazyMount(blobPath, mountPath, cachePath, index); err == nil {
-				if !seenLayer[mountPath] {
-					layers = append([]string{mountPath}, layers...)
-					seenLayer[mountPath] = true
+			// Try Lazy Loading if index exists
+			index, err := storage.GetLayerIndex(digest)
+			if err != nil {
+				// Fallback for differently named base image layers if they actually exist
+				if idx == 0 && len(manifest.Layers) == 1 {
+					if _, statErr := os.Stat(filepath.Join(config.DataRoot, "alpine.tar.gz")); statErr == nil {
+						index, err = storage.GetLayerIndex("alpine.tar.gz")
+						blobPath = filepath.Join(config.DataRoot, "alpine.tar.gz")
+					}
 				}
-				continue
 			}
-		}
 
-		// Fallback to full extraction
-		destPath := filepath.Join(extractedRoot, digest)
-		os.MkdirAll(destPath, 0755)
-		if info, err := os.Stat(destPath); os.IsNotExist(err) || (err == nil && info.IsDir() && isDirEmpty(destPath)) {
-			fmt.Printf("➜ Extracting layer: %s\n", digest[:12])
-			if err := utils.ExtractTarGz(blobPath, destPath); err != nil {
-				return nil, fmt.Errorf("failed to extract layer %s: %v", digest, err)
+			if err == nil {
+				mountPath := filepath.Join(config.DataRoot, "lazy", digest)
+				cachePath := filepath.Join(config.DataRoot, "cache", digest)
+				fmt.Printf("➜ Lazy-mounting layer: %s\n", digest[:12])
+				if err := lazy.StartLazyMount(blobPath, mountPath, cachePath, index); err == nil {
+					results <- layerResult{idx, mountPath, nil}
+					return
+				}
 			}
-		}
 
-		if !seenLayer[destPath] {
-			layers = append([]string{destPath}, layers...)
-			seenLayer[destPath] = true
-		}
+			// Fallback to full extraction
+			destPath := filepath.Join(extractedRoot, digest)
+			os.MkdirAll(destPath, 0755)
+			if info, err := os.Stat(destPath); os.IsNotExist(err) || (err == nil && info.IsDir() && isDirEmpty(destPath)) {
+				fmt.Printf("➜ Extracting layer: %s\n", digest[:12])
+				if err := utils.ExtractTarGz(blobPath, destPath); err != nil {
+					results <- layerResult{idx, "", fmt.Errorf("failed to extract layer %s: %v", digest, err)}
+					return
+				}
+			}
+			results <- layerResult{idx, destPath, nil}
+		}(i, l)
 	}
 
+	layerPaths := make([]string, len(manifest.Layers))
+	for i := 0; i < len(manifest.Layers); i++ {
+		res := <-results
+		if res.err != nil {
+			return nil, res.err
+		}
+		layerPaths[res.index] = res.path
+	}
+
+	for i := len(layerPaths) - 1; i >= 0; i-- {
+		layers = append(layers, layerPaths[i])
+	}
 	return layers, nil
 }
 
@@ -396,6 +430,12 @@ func resolveImageLayers(imageName string) ([]string, error) {
 func UnmountRootfs(containerID string) {
 	rootfs := filepath.Join(config.DataRoot, "containers", containerID, "rootfs")
 	syscall.Unmount(rootfs, 0)
+}
+
+func InvalidateImageCache(imageName string) {
+	cacheMu.Lock()
+	delete(configCache, imageName)
+	cacheMu.Unlock()
 }
 
 func ResolveImageConfig(imageName string) (*models.OCIConfig, error) {

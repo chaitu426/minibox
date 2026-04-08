@@ -9,7 +9,6 @@ import (
 )
 
 // ExtractTarGz extracts a gzip compressed tarball directly into a destination directory.
-// This is used for extracting minimal root filesystems like Alpine.
 func ExtractTarGz(gzipStream string, dest string) error {
 	file, err := os.Open(gzipStream)
 	if err != nil {
@@ -24,9 +23,13 @@ func ExtractTarGz(gzipStream string, dest string) error {
 	defer uncompressedStream.Close()
 
 	tarReader := tar.NewReader(uncompressedStream)
+	return ExtractTarStream(tarReader, dest)
+}
 
+// ExtractTarStream extracts a tar stream from a reader into a destination directory.
+func ExtractTarStream(tr *tar.Reader, dest string) error {
 	for {
-		header, err := tarReader.Next()
+		header, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
@@ -49,7 +52,7 @@ func ExtractTarGz(gzipStream string, dest string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(outFile, tarReader); err != nil {
+			if _, err := io.Copy(outFile, tr); err != nil {
 				outFile.Close()
 				return err
 			}
@@ -67,7 +70,6 @@ func ExtractTarGz(gzipStream string, dest string) error {
 				return err
 			}
 			os.Remove(target) // ignore error
-			// Hardlinks in tar are relative to the root of the archive
 			linkTarget := filepath.Join(dest, header.Linkname)
 			if err := os.Link(linkTarget, target); err != nil {
 				return err
@@ -75,6 +77,84 @@ func ExtractTarGz(gzipStream string, dest string) error {
 		}
 	}
 	return nil
+}
+
+// CopyDirTar performs a high-speed streaming copy of a directory using native tar.
+// It accepts an optional ignore function to skip specific files or directories.
+func CopyDirTar(src, dst string, ignore func(string) bool) error {
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+
+	// Writer goroutine: walks the source and Writes to the pipe
+	go func() {
+		tw := tar.NewWriter(pw)
+		defer pw.Close()
+		defer tw.Close()
+
+		err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			
+			if ignore != nil && ignore(path) {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if path == src {
+				return nil
+			}
+
+			header, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				return err
+			}
+
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			header.Name = rel
+
+			if info.Mode()&os.ModeSymlink != 0 {
+				link, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				header.Linkname = link
+			}
+
+			if err := tw.WriteHeader(header); err != nil {
+				return err
+			}
+
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			_, err = io.Copy(tw, f)
+			return err
+		})
+		errCh <- err
+	}()
+
+	// Main thread extracted from the reader end of the pipe
+	tr := tar.NewReader(pr)
+	extractErr := ExtractTarStream(tr, dst)
+
+	walkErr := <-errCh
+	if extractErr != nil {
+		return extractErr
+	}
+	return walkErr
 }
 
 // CreateTarGz creates a gzip compressed tarball from a source directory.

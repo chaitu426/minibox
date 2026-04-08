@@ -28,6 +28,11 @@ type LayerIndex struct {
 // IndexLayer creates a JSON index of all files in a .tar.gz blob.
 // Note: In this simplified version, we index offsets in the uncompressed stream.
 func IndexLayer(blobPath string) error {
+	indexPath := blobPath + ".index.json"
+	if _, err := os.Stat(indexPath); err == nil {
+		return nil // Already indexed
+	}
+
 	f, err := os.Open(blobPath)
 	if err != nil {
 		return err
@@ -79,7 +84,7 @@ func IndexLayer(blobPath string) error {
 		// A real implementation would track the underlying reader's position.
 	}
 
-	indexPath := blobPath + ".index.json"
+	indexPath = blobPath + ".index.json"
 	data, _ := json.MarshalIndent(index, "", "  ")
 	fmt.Printf("➜ Generated OCI Index: %s\n", indexPath)
 	return os.WriteFile(indexPath, data, 0644)

@@ -132,18 +132,22 @@ type LazyFile struct {
 }
 
 func (f *LazyFile) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	f.root.mu.Lock()
-	defer f.root.mu.Unlock()
+	cachePath := filepath.Join(f.root.CacheDir, f.info.Name)
 
-	// Perform a single pass full-layer extraction on first access
-	if !f.root.extracted["__all__"] {
-		if err := f.root.extractAllFiles(); err != nil {
-			return nil, 0, syscall.EIO
+	// Check if already cached (on disk)
+	if _, err := os.Stat(cachePath); err != nil {
+		f.root.mu.Lock()
+		// Double check under lock
+		if !f.root.extracted[f.info.Name] {
+			if err := f.root.extractFile(f.info.Name); err != nil {
+				f.root.mu.Unlock()
+				fmt.Printf("➜ Lazy extraction failed for %s: %v\n", f.info.Name, err)
+				return nil, 0, syscall.EIO
+			}
 		}
-		f.root.extracted["__all__"] = true
+		f.root.mu.Unlock()
 	}
 
-	cachePath := filepath.Join(f.root.CacheDir, f.info.Name)
 	fd, err := syscall.Open(cachePath, int(flags), 0)
 	if err != nil {
 		return nil, 0, fs.ToErrno(err)
@@ -151,7 +155,7 @@ func (f *LazyFile) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fu
 	return fs.NewLoopbackFile(fd), 0, 0
 }
 
-func (r *LazyRoot) extractAllFiles() error {
+func (r *LazyRoot) extractFile(targetName string) error {
 	file, err := os.Open(r.BlobPath)
 	if err != nil {
 		return err
@@ -165,6 +169,7 @@ func (r *LazyRoot) extractAllFiles() error {
 	defer gr.Close()
 
 	tr := tar.NewReader(gr)
+	found := false
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -175,19 +180,38 @@ func (r *LazyRoot) extractAllFiles() error {
 		}
 
 		target := filepath.Join(r.CacheDir, header.Name)
-		if header.Typeflag == tar.TypeDir {
-			os.MkdirAll(target, 0755)
-		} else if header.Typeflag == tar.TypeSymlink {
-			os.MkdirAll(filepath.Dir(target), 0755)
-			os.Symlink(header.Linkname, target)
-		} else if header.Typeflag == tar.TypeReg {
-			os.MkdirAll(filepath.Dir(target), 0755)
-			outFile, err := os.Create(target)
-			if err == nil {
-				io.Copy(outFile, tr)
-				outFile.Close()
+		
+		// Opportunistic extraction: if we encounter a file that isn't cached yet, 
+		// and it's small or it's the target, extract it.
+		if header.Name == targetName || !r.extracted[header.Name] {
+			if header.Typeflag == tar.TypeDir {
+				os.MkdirAll(target, 0755)
+			} else if header.Typeflag == tar.TypeSymlink {
+				os.MkdirAll(filepath.Dir(target), 0755)
+				os.Remove(target)
+				os.Symlink(header.Linkname, target)
+			} else if header.Typeflag == tar.TypeReg {
+				os.MkdirAll(filepath.Dir(target), 0755)
+				outFile, err := os.Create(target)
+				if err == nil {
+					io.Copy(outFile, tr)
+					outFile.Close()
+					os.Chmod(target, os.FileMode(header.Mode))
+				}
 			}
+			r.extracted[header.Name] = true
 		}
+
+		if header.Name == targetName {
+			found = true
+			// We can stop if we want, but continuing a bit might help other files.
+			// For now, let's stop to minimize latency for this specific Open call.
+			break 
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("file %s not found in layer", targetName)
 	}
 	return nil
 }

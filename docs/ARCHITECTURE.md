@@ -89,10 +89,12 @@ Parser in `internal/parser/parser.go` supports:
 
 ### 3.2 Base image prep
 
-Current supported base: Alpine (`alpine` / `alpine:latest`).
+Supports **Universal OCI Image Pulling** (Docker V2 Registry).
 
-- Downloads/extracts Alpine minirootfs if needed.
-- Caches in `DataRoot/base_layers/alpine`.
+- Fetches manifests and blobs from `auth.docker.io` (defaults to Docker Hub).
+- Automatically resolves multi-arch manifest lists to `linux/amd64`.
+- Caches layers in `DataRoot/base_layers/<image_tag>`.
+- Implemented in `internal/builder/fetch_oci.go`.
 
 ### 3.3 DAG execution model
 
@@ -102,15 +104,15 @@ Current supported base: Alpine (`alpine` / `alpine:latest`).
 - Runs each wave in parallel goroutines.
 - Uses per-line prefixed writer (`[block] ...`) to avoid interleaved partial lines.
 
-Block-level execution (`buildBlock(...)`):
-
-- Creates temp overlay root (`tmp/<hash>/{upper,work,root}`)
-- Runs instructions:
-  - `RUN`: mounts overlay and executes through `chroot ... /bin/sh -c ...`
-  - `COPY`: copy from context to upper layer
-  - `WORKDIR`: updates effective workdir and ensures path exists
-- Optional `AUTO-DEPS` pass (detects package manifests and runs installers)
+- Block-level execution (`buildBlock(...)`):
+  - Creates temp overlay root (`tmp/<hash>/{upper,work,root}`)
+  - Runs instructions:
+    - `RUN`: mounts overlay and executes through `chroot ... /bin/sh -c ...`
+    - `COPY`: copy from host context or from another block's layer (`COPY FROM=`)
+    - `WORKDIR`: updates effective workdir and ensures path exists
+  - Optional `AUTO-DEPS` pass (detects package manifests and runs language-specific installers like npm, pip, go)
 - Finalizes by moving upper dir into `layers/<hash>`
+- **Size Optimization**: Blocks marked as `BNEED` (Build-only Need) are executed but excluded from the final exported image stack unless files are explicitly copied from them.
 
 ### 3.4 Hashing and cache keys
 
@@ -422,7 +424,6 @@ This section describes current behavior honestly for production planning:
 - User namespace remap is currently not active in launcher flags (rootful execution path).
 - Healthcheck model is basic (interval + command) and not full OCI HealthConfig semantics.
 - `exec` currently uses local `nsenter` from CLI side (not daemon-side streaming API).
-- Build system currently supports Alpine base only.
 - Save/load format is local minibox archive, not full Docker save format compatibility.
 
 These are good future milestones but do not block current operation.
@@ -431,7 +432,7 @@ These are good future milestones but do not block current operation.
 
 ## 15) File Map (Where to Read Next)
 
-- Build core: `internal/builder/builder.go`
+- Build core: `internal/builder/builder.go`, `internal/builder/fetch_oci.go`
 - Parser: `internal/parser/parser.go`
 - Runtime parent/child/init:
   - `internal/runtime/process.go`

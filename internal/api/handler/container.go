@@ -12,12 +12,18 @@ import (
 )
 
 type RunRequest struct {
-	Image    string            `json:"image"`
-	Command  []string          `json:"command"`
-	MemoryMB int               `json:"memory"`
-	CPUMax   int               `json:"cpu"`
-	Detached bool              `json:"detached"`
-	PortMap  map[string]string `json:"ports"` // hostPort → containerPort
+	Image       string            `json:"image"`
+	Command     []string          `json:"command"`
+	MemoryMB    int               `json:"memory"`
+	CPUMax      int               `json:"cpu"`
+	CPUSet      string            `json:"cpuset"`        // e.g. "0,1"
+	IOWeight    int               `json:"io_weight"`     // 1-1000
+	OOMScoreAdj int               `json:"oom_score_adj"` // -1000 to 1000
+	Sysctls     map[string]string `json:"sysctls"`
+	Detached    bool              `json:"detached"`
+	PortMap     map[string]string `json:"ports"` // hostPort → containerPort
+	Volumes     map[string]string `json:"volumes"`
+	Env         []string          `json:"env"`
 }
 
 func generateID() string {
@@ -63,18 +69,34 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 
 	if len(req.Command) == 0 {
 		if imgConfig, err := runtime.ResolveImageConfig(req.Image); err == nil {
-			req.Command = imgConfig.Config.Cmd
+			// OCI spec: Entrypoint + Cmd = the full execution command
+			req.Command = append(imgConfig.Config.Entrypoint, imgConfig.Config.Cmd...)
 		}
 	}
 
 	if req.PortMap == nil {
 		req.PortMap = map[string]string{}
 	}
+	if req.Volumes == nil {
+		req.Volumes = map[string]string{}
+	}
+	if req.Sysctls == nil {
+		req.Sysctls = map[string]string{}
+	}
 
 	containerID := generateID()
 
+	opts := runtime.ContainerOptions{
+		MemoryMB:    req.MemoryMB,
+		CPUMax:      req.CPUMax,
+		CPUSet:      req.CPUSet,
+		IOWeight:    req.IOWeight,
+		OOMScoreAdj: req.OOMScoreAdj,
+		Sysctls:     req.Sysctls,
+	}
+
 	if req.Detached {
-		output, err := runtime.RunCommand(r.Context(), containerID, req.Image, req.MemoryMB, req.CPUMax, true, req.PortMap, req.Command)
+		output, err := runtime.RunCommand(r.Context(), containerID, req.Image, opts, true, req.PortMap, req.Volumes, req.Env, req.Command)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -96,7 +118,7 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	sw := &streamWriter{w: w, f: flusher}
-	runErr := runtime.RunCommandStream(r.Context(), containerID, req.Image, req.MemoryMB, req.CPUMax, req.PortMap, req.Command, sw)
+	runErr := runtime.RunCommandStream(r.Context(), containerID, req.Image, opts, req.PortMap, req.Volumes, req.Env, req.Command, sw)
 	if runErr != nil {
 		fmt.Fprintf(w, "Error: %v\n", runErr)
 		flusher.Flush()

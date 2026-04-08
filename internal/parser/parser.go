@@ -126,6 +126,12 @@ func parseNewFormat(lines []string, cfile *models.Cfile) (*models.Cfile, error) 
 			}
 			currentBlock.Needs = append(currentBlock.Needs, parts[1])
 
+		case "BNEED":
+			if len(parts) < 2 {
+				return nil, fmt.Errorf("BNEED requires a block name")
+			}
+			currentBlock.BNeeds = append(currentBlock.BNeeds, parts[1])
+
 		case "AUTO-DEPS":
 			currentBlock.AutoDeps = true
 
@@ -148,17 +154,23 @@ func parseNewFormat(lines []string, cfile *models.Cfile) (*models.Cfile, error) 
 			})
 
 		case "COPY":
-			currentBlock.Instructions = append(currentBlock.Instructions, models.Instruction{
-				Type: models.TypeCopy, Args: parts[1:],
-			})
+			if len(parts) >= 4 && strings.HasPrefix(strings.ToUpper(parts[1]), "FROM=") {
+				fromBlock := strings.TrimPrefix(parts[1], "FROM=")
+				currentBlock.BNeeds = append(currentBlock.BNeeds, fromBlock)
+				currentBlock.Instructions = append(currentBlock.Instructions, models.Instruction{
+					Type: models.TypeCopy, Args: parts[1:], // Keep FROM= in args so builder.go knows to copy from an external block
+				})
+			} else {
+				currentBlock.Instructions = append(currentBlock.Instructions, models.Instruction{
+					Type: models.TypeCopy, Args: parts[1:],
+				})
+			}
 
 		case "WORKDIR":
 			currentBlock.Instructions = append(currentBlock.Instructions, models.Instruction{
 				Type: models.TypeWorkdir, Args: parts[1:],
 			})
-			if cfile.Workdir == "" {
-				cfile.Workdir = parts[1]
-			}
+			cfile.Workdir = parts[1]
 
 		case "ENV":
 			// env KEY=VALUE or env KEY VALUE

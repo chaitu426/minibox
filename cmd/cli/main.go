@@ -203,13 +203,15 @@ func logsCommand() {
 
 func runCommand() {
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: minibox run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] <image> [command...]")
+		exitf(2, "Usage: minibox run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] [-v host:container] [-e KEY=VAL] <image> [command...]")
 	}
 
 	detached := false
 	memoryMB := 0
 	cpuMax := 0
 	portMap := map[string]string{}
+	volumeMap := map[string]string{}
+	var userEnv []string
 	i := 2
 
 	for i < len(os.Args) {
@@ -242,6 +244,29 @@ func runCommand() {
 			}
 			portMap[parts[0]] = parts[1]
 			i++
+		case "-v", "--volume":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "Error: -v requires an argument (host_path:container_path)")
+			}
+			parts := strings.SplitN(os.Args[i], ":", 2)
+			if len(parts) != 2 {
+				exitf(2, "Error: invalid volume mapping %q (expected host:container)", os.Args[i])
+			}
+			// Resolve absolute path for host mapping
+			absHost, err := filepath.Abs(parts[0])
+			if err != nil {
+				exitf(1, "Error resolving absolute path for volume %q: %v", parts[0], err)
+			}
+			volumeMap[absHost] = parts[1]
+			i++
+		case "-e", "--env":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "Error: -e requires an argument (KEY=VAL)")
+			}
+			userEnv = append(userEnv, os.Args[i])
+			i++
 		default:
 			goto doneFlags
 		}
@@ -249,7 +274,7 @@ func runCommand() {
 doneFlags:
 
 	if i >= len(os.Args) {
-		exitf(2, "Usage: minibox run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] <image> [command...]")
+		exitf(2, "Usage: minibox run [-d] [-m memoryMB] [-c cpuMax] [-p host:container] [-v host:container] [-e KEY=VAL] <image> [command...]")
 	}
 
 	image := os.Args[i]
@@ -265,6 +290,8 @@ doneFlags:
 		"cpu":      cpuMax,
 		"detached": detached,
 		"ports":    portMap,
+		"volumes":  volumeMap,
+		"env":      userEnv,
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
