@@ -15,9 +15,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// envChildMountNS is set by the daemon when spawning the child with CLONE_NEWNS. A second
-// unshare(CLONE_NEWNS) in that child often fails with EPERM; we only unshare when this is
-// unset (e.g. bare `minibox child` for defense in depth).
+// envChildMountNS is set by the daemon when spawning the child with CLONE_NEWNS.
+// If a child is started without that flag, it will unshare on its own.
 const envChildMountNS = "MINIBOX_CHILD_NEWNS"
 
 func RunContainer() {
@@ -54,27 +53,27 @@ func RunContainer() {
 
 	var opts ContainerOptions
 	if err := json.Unmarshal([]byte(optsJSON), &opts); err != nil {
-		fmt.Printf("Warning: failed to unmarshal ContainerOptions: %v\n", err)
+		fmt.Printf("[warn] unmarshal container options: %v\n", err)
 	}
 
 	var imgConfig models.OCIConfig
 	if err := json.Unmarshal([]byte(configJSON), &imgConfig); err != nil {
-		fmt.Printf("Warning: failed to unmarshal OCI config: %v\n", err)
+		fmt.Printf("[warn] unmarshal OCI config: %v\n", err)
 	}
 
 	var lowerDirs []string
 	if err := json.Unmarshal([]byte(layersJSON), &lowerDirs); err != nil {
-		fmt.Printf("Warning: failed to unmarshal layer info: %v\n", err)
+		fmt.Printf("[warn] unmarshal layer info: %v\n", err)
 	}
 
 	var volumes map[string]string
 	if err := json.Unmarshal([]byte(volumesJSON), &volumes); err != nil {
-		fmt.Printf("Warning: failed to unmarshal volume info: %v\n", err)
+		fmt.Printf("[warn] unmarshal volume info: %v\n", err)
 	}
 
 	var userEnv []string
 	if err := json.Unmarshal([]byte(userEnvJSON), &userEnv); err != nil {
-		fmt.Printf("Warning: failed to unmarshal user env info: %v\n", err)
+		fmt.Printf("[warn] unmarshal user env: %v\n", err)
 	}
 
 	// Cgroups V2 limits deployment
@@ -116,7 +115,7 @@ func RunContainer() {
 		os.MkdirAll(hostPath, 0755)
 		os.MkdirAll(targetPath, 0755)
 		if err := unix.Mount(hostPath, targetPath, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-			fmt.Printf("Warning: failed to bind mount %s to %s: %v\n", hostPath, targetContainerPath, err)
+			fmt.Printf("[warn] bind mount host=%s target=%s err=%v\n", hostPath, targetContainerPath, err)
 		}
 	}
 
@@ -142,37 +141,59 @@ func RunContainer() {
 	os.MkdirAll("/proc", 0755)
 	procFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
 	if err := unix.Mount("proc", "/proc", "proc", procFlags, ""); err != nil {
-		fmt.Printf("Warning: /proc mount failed: %v\n", err)
+		fmt.Printf("[warn] mount /proc: %v\n", err)
 	}
 
 	os.MkdirAll("/sys", 0755)
 	sysFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC | unix.MS_RDONLY)
 	if err := unix.Mount("sysfs", "/sys", "sysfs", sysFlags, ""); err != nil {
-		fmt.Printf("Warning: /sys mount failed: %v\n", err)
+		fmt.Printf("[warn] mount /sys: %v\n", err)
 	}
 
 	os.MkdirAll("/dev", 0755)
 	devFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV)
 	if err := unix.Mount("tmpfs", "/dev", "tmpfs", devFlags, ""); err != nil {
-		fmt.Printf("Warning: /dev tmpfs mount failed: %v\n", err)
+		fmt.Printf("[warn] mount /dev tmpfs: %v\n", err)
 	}
 
 	os.MkdirAll("/dev/shm", 01777)
 	shmFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME)
 	if err := unix.Mount("tmpfs", "/dev/shm", "tmpfs", shmFlags, "mode=1777,size=65536k"); err != nil {
-		fmt.Printf("Warning: /dev/shm mount failed: %v\n", err)
+		fmt.Printf("[warn] mount /dev/shm: %v\n", err)
 	}
 	os.Chmod("/dev/shm", 01777)
 
-	devices := []string{"null", "zero", "random", "urandom", "full", "tty"}
-	for _, dev := range devices {
-		devPath := filepath.Join("/dev", dev)
-		os.OpenFile(devPath, os.O_CREATE|os.O_RDWR, 0666)
+	// Create real device nodes. Many programs (including postgres initdb) rely on /dev/null
+	// being a character device, not a regular file.
+	type devNode struct {
+		name  string
+		major uint32
+		minor uint32
+		mode  uint32
+	}
+	nodes := []devNode{
+		{"null", 1, 3, 0666},
+		{"zero", 1, 5, 0666},
+		{"random", 1, 8, 0666},
+		{"urandom", 1, 9, 0666},
+		{"full", 1, 7, 0666},
+		{"tty", 5, 0, 0666},
+	}
+	for _, n := range nodes {
+		p := filepath.Join("/dev", n.name)
+		if _, err := os.Stat(p); err == nil {
+			continue
+		}
+		dev := int(unix.Mkdev(n.major, n.minor))
+		if err := unix.Mknod(p, unix.S_IFCHR|n.mode, dev); err != nil {
+			// Best-effort; older kernels/userns may deny mknod.
+			fmt.Printf("[warn] create /dev/%s: %v\n", n.name, err)
+		}
 	}
 
 	if imgConfig.Config.WorkingDir != "" {
 		if err := os.Chdir(imgConfig.Config.WorkingDir); err != nil {
-			fmt.Printf("Warning: failed to change workdir to %s: %v\n", imgConfig.Config.WorkingDir, err)
+			fmt.Printf("[warn] chdir workdir=%s err=%v\n", imgConfig.Config.WorkingDir, err)
 		}
 	}
 
@@ -216,10 +237,14 @@ func RunContainer() {
 	}
 	env = append(env, "HOSTNAME="+containerID)
 
-	dropContainerCapabilities()
+	// DB containers often need to initialize/chown their data directory on first boot.
+	// In DB mode we keep capabilities so the entrypoint can create directories and set ownership.
+	if !opts.DBMode {
+		dropContainerCapabilities()
+	}
 	setContainerRLimits()
 	if err := EnableSeccomp(); err != nil {
-		fmt.Println("Warning: Failed to enable seccomp:", err)
+		fmt.Printf("[warn] seccomp: %v\n", err)
 	}
 
 	applySysctls(opts.Sysctls)
@@ -240,7 +265,7 @@ func applySysctls(sysctls map[string]string) {
 	for key, value := range sysctls {
 		path := filepath.Join("/proc/sys", strings.ReplaceAll(key, ".", "/"))
 		if err := os.WriteFile(path, []byte(value), 0644); err != nil {
-			fmt.Printf("Warning: failed to set sysctl %s=%s: %v\n", key, value, err)
+			fmt.Printf("[warn] sysctl %s=%s: %v\n", key, value, err)
 		}
 	}
 }

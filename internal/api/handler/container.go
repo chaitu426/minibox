@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/chaitu426/minibox/internal/config"
 	"github.com/chaitu426/minibox/internal/runtime"
@@ -12,18 +14,20 @@ import (
 )
 
 type RunRequest struct {
-	Image       string            `json:"image"`
-	Command     []string          `json:"command"`
-	MemoryMB    int               `json:"memory"`
-	CPUMax      int               `json:"cpu"`
-	CPUSet      string            `json:"cpuset"`        // e.g. "0,1"
-	IOWeight    int               `json:"io_weight"`     // 1-1000
-	OOMScoreAdj int               `json:"oom_score_adj"` // -1000 to 1000
-	Sysctls     map[string]string `json:"sysctls"`
-	Detached    bool              `json:"detached"`
-	PortMap     map[string]string `json:"ports"` // hostPort → containerPort
-	Volumes     map[string]string `json:"volumes"`
-	Env         []string          `json:"env"`
+	Image        string            `json:"image"`
+	Command      []string          `json:"command"`
+	MemoryMB     int               `json:"memory"`
+	CPUMax       int               `json:"cpu"`
+	CPUSet       string            `json:"cpuset"`        // e.g. "0,1"
+	IOWeight     int               `json:"io_weight"`     // 1-1000
+	OOMScoreAdj  int               `json:"oom_score_adj"` // -1000 to 1000
+	Sysctls      map[string]string `json:"sysctls"`
+	DBMode       bool              `json:"db_mode"`
+	Detached     bool              `json:"detached"`
+	PortMap      map[string]string `json:"ports"` // hostPort → containerPort
+	Volumes      map[string]string `json:"volumes"`
+	NamedVolumes map[string]string `json:"named_volumes"` // volumeName -> containerPath
+	Env          []string          `json:"env"`
 }
 
 func generateID() string {
@@ -73,6 +77,10 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 			req.Command = append(imgConfig.Config.Entrypoint, imgConfig.Config.Cmd...)
 		}
 	}
+	if len(req.Command) == 0 {
+		http.Error(w, "no command provided and image has no default command; pass a command (e.g. `minibox run <image> <cmd...>` or `minibox db run <image> <cmd...>`)", http.StatusBadRequest)
+		return
+	}
 
 	if req.PortMap == nil {
 		req.PortMap = map[string]string{}
@@ -80,8 +88,30 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Volumes == nil {
 		req.Volumes = map[string]string{}
 	}
+	if req.NamedVolumes == nil {
+		req.NamedVolumes = map[string]string{}
+	}
 	if req.Sysctls == nil {
 		req.Sysctls = map[string]string{}
+	}
+
+	// Resolve daemon-managed named volumes into host paths under DataRoot/volumes.
+	// This makes DB-style persistent containers safer and consistent for users.
+	for name, cpath := range req.NamedVolumes {
+		if err := security.ValidVolumeName(name); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if cpath == "" || cpath[0] != '/' {
+			http.Error(w, "invalid container volume path", http.StatusBadRequest)
+			return
+		}
+		hostPath := filepath.Join(config.DataRoot, "volumes", name)
+		if err := os.MkdirAll(hostPath, 0755); err != nil {
+			http.Error(w, "failed to create volume", http.StatusInternalServerError)
+			return
+		}
+		req.Volumes[hostPath] = cpath
 	}
 
 	containerID := generateID()
@@ -93,6 +123,7 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 		IOWeight:    req.IOWeight,
 		OOMScoreAdj: req.OOMScoreAdj,
 		Sysctls:     req.Sysctls,
+		DBMode:      req.DBMode,
 	}
 
 	if req.Detached {

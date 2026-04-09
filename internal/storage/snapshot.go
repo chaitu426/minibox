@@ -27,6 +27,6 @@ func SnapshotVolume(volumePath string, snapshotID string) (string, error) {
 		return "", fmt.Errorf("snapshot copy failed: %w", err)
 	}
 
-	fmt.Printf("➜ Snapshot %s created in %v\n", snapshotID, time.Since(start))
+	fmt.Printf("[storage] snapshot created id=%s dur=%v\n", snapshotID, time.Since(start))
 	return snapshotRoot, nil
 }

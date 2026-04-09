@@ -3,3 +3,6 @@ data
 examples
 db-test
 daemon.log
+
+# demo recordings (keep scripts/docs tracked)
+/vedio

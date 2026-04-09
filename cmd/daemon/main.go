@@ -16,9 +16,14 @@ import (
 	"github.com/chaitu426/minibox/internal/network"
 	"github.com/chaitu426/minibox/internal/runtime"
 	"github.com/chaitu426/minibox/internal/storage"
+	"github.com/chaitu426/minibox/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Printf("miniboxd %s\n", version.Version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "child" {
 		runtime.RunContainer()
 		return
@@ -44,12 +49,18 @@ func main() {
 		}
 	}
 
-	// Phase 4: Auto-index blobs for lazy loading
-	indexExistingBlobs()
-
-	// Set up the host bridge network for container isolation
-	if err := network.SetupBridge(); err != nil {
-		fmt.Printf("Warning: network bridge setup failed: %v\n", err)
+	// Fast startup: don't block on indexing or bridge bring-up.
+	// - Disable startup indexing with MINIBOX_INDEX_ON_STARTUP=0
+	// - Disable startup bridge bring-up with MINIBOX_BRIDGE_ON_STARTUP=0
+	if os.Getenv("MINIBOX_INDEX_ON_STARTUP") != "0" {
+		go indexExistingBlobs()
+	}
+	if os.Getenv("MINIBOX_BRIDGE_ON_STARTUP") != "0" {
+		go func() {
+			if err := network.SetupBridge(); err != nil {
+				fmt.Printf("[warn] network bridge setup failed: %v\n", err)
+			}
+		}()
 	}
 
 	d := daemon.NewDaemon()
@@ -73,11 +84,11 @@ func indexExistingBlobs() {
 	if err != nil {
 		return
 	}
-	fmt.Printf("➜ Indexing blobs in %s for lazy loading...\n", blobsPath)
+	fmt.Printf("[startup] indexing blobs in %s\n", blobsPath)
 	for _, f := range files {
 		if !f.IsDir() && !strings.HasSuffix(f.Name(), ".index.json") {
 			if err := storage.IndexLayer(filepath.Join(blobsPath, f.Name())); err != nil {
-				fmt.Printf("Error indexing blob %s: %v\n", f.Name(), err)
+				fmt.Printf("[warn] index blob=%s err=%v\n", f.Name(), err)
 			}
 		}
 	}
@@ -86,7 +97,7 @@ func indexExistingBlobs() {
 	alpinePath := filepath.Join(config.DataRoot, "alpine.tar.gz")
 	if _, err := os.Stat(alpinePath); err == nil {
 		if err := storage.IndexLayer(alpinePath); err != nil {
-			fmt.Printf("Error indexing alpine: %v\n", err)
+			fmt.Printf("[warn] index alpine err=%v\n", err)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 // Container IDs are exactly 8 lowercase hex digits (see handler.generateID).
 var containerIDRe = regexp.MustCompile(`^[a-f0-9]{8}$`)
+var volumeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
 var (
 	ErrInvalidContainerID = errors.New("invalid container id")
@@ -22,6 +23,17 @@ var (
 // ValidContainerID reports whether id matches the expected container identifier format.
 func ValidContainerID(id string) bool {
 	return containerIDRe.MatchString(id)
+}
+
+// ValidVolumeName enforces a conservative name format for daemon-managed volumes.
+func ValidVolumeName(name string) error {
+	if name == "" || len(name) > 64 {
+		return fmt.Errorf("invalid volume name")
+	}
+	if !volumeNameRe.MatchString(name) {
+		return fmt.Errorf("invalid volume name")
+	}
+	return nil
 }
 
 // ContainerDir returns the absolute path to a container's directory under dataRoot, or an error.

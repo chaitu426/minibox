@@ -43,9 +43,9 @@ func CopyRecursive(src, dst string, ignore func(string) bool) error {
 		return err
 	}
 
-	// ADVANCED OPTIMIZATIONS (Docker-like)
+	// Fast-path copy options:
 	if info.IsDir() {
-		// Optimization 1: Parallel Copy Method (Worker Pool)
+		// Parallel copy worker pool.
 		if err := CopyRecursiveParallel(src, dst, ignore); err == nil {
 			return nil
 		}
@@ -53,7 +53,7 @@ func CopyRecursive(src, dst string, ignore func(string) bool) error {
 	}
 
 	if info.Mode().IsRegular() {
-		// Optimization 2: Reflink (FICLONE) for regular files
+		// Reflink (FICLONE) for regular files when supported.
 		// Since we already checked `ignore(src)` at the top, a single regular file is safe to copy
 		err := CopyReflink(src, dst)
 		if err == nil {
@@ -61,7 +61,7 @@ func CopyRecursive(src, dst string, ignore func(string) bool) error {
 		}
 	}
 
-	// Optimization 3: System 'cp -aT' as a general fast fallback on Linux
+	// System 'cp -aT' as a fast fallback on Linux.
 	// ONLY safe if there is absolutely no ignore list!
 	if ignore == nil {
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {

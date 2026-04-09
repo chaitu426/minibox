@@ -53,6 +53,12 @@ Runs the HTTP API and container runtime backend.
 
 Default listen address: **`127.0.0.1:8080`** (localhost only).
 
+### Version
+
+```bash
+miniboxd --version
+```
+
 ### Daemon environment variables
 
 | Variable | Description |
@@ -373,6 +379,14 @@ Container IDs are **8 hexadecimal characters** (e.g. `a1b2c3d4`). Use the ID ret
 - **Wipe local state (`./data`):** If the daemon created root-owned files, run from the repo root: `sudo ./scripts/clean-data.sh` (or set `MINIBOX_DATA_ROOT` to point at another directory to clean). This deletes images, layers, containers, and blobs under that path and recreates an empty directory.
 - **`could not unshare mount namespace: operation not permitted`:** The child skips a second `unshare` when the daemon sets `MINIBOX_CHILD_NEWNS=1`. Rebuild and restart the daemon.
 - **`Error remounting root private: operation not permitted` / `no such process` (network):** Rootless kernels often deny `MS_PRIVATE` on `/`. The runtime now bind-mounts `rootfs` first and marks that mount private, with fallbacks; the “no such process” message was the container exiting early—rebuild after this fix.
+- **DB containers (Postgres example) exits early:** Known issue on some kernels because Postgres requires a more complete `/dev` setup (real device nodes like `/dev/null`). This will be improved in a future release; for now, treat DB images as experimental.
+
+### Startup performance knobs
+
+The daemon can do expensive work on startup (blob indexing and bridge setup). You can disable these to make startup near-instant:
+
+- `MINIBOX_INDEX_ON_STARTUP=0`: skip indexing blobs at daemon start (lazy indexing still possible later)
+- `MINIBOX_BRIDGE_ON_STARTUP=0`: skip bridge setup at daemon start (bridge is created lazily on first container network setup)
 
 ---
 

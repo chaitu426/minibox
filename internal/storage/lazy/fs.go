@@ -141,7 +141,7 @@ func (f *LazyFile) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fu
 		if !f.root.extracted[f.info.Name] {
 			if err := f.root.extractFile(f.info.Name); err != nil {
 				f.root.mu.Unlock()
-				fmt.Printf("➜ Lazy extraction failed for %s: %v\n", f.info.Name, err)
+				fmt.Printf("[lazy] extract failed name=%s err=%v\n", f.info.Name, err)
 				return nil, 0, syscall.EIO
 			}
 		}
@@ -180,8 +180,8 @@ func (r *LazyRoot) extractFile(targetName string) error {
 		}
 
 		target := filepath.Join(r.CacheDir, header.Name)
-		
-		// Opportunistic extraction: if we encounter a file that isn't cached yet, 
+
+		// Opportunistic extraction: if we encounter a file that isn't cached yet,
 		// and it's small or it's the target, extract it.
 		if header.Name == targetName || !r.extracted[header.Name] {
 			if header.Typeflag == tar.TypeDir {
@@ -206,7 +206,7 @@ func (r *LazyRoot) extractFile(targetName string) error {
 			found = true
 			// We can stop if we want, but continuing a bit might help other files.
 			// For now, let's stop to minimize latency for this specific Open call.
-			break 
+			break
 		}
 	}
 

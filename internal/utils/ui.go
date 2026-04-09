@@ -29,7 +29,7 @@ func PrintSuccess(format string, a ...interface{}) {
 		fmt.Printf("OK  "+format+"\n", a...)
 		return
 	}
-	fmt.Printf(ColorGreen+"✔ "+format+ColorReset+"\n", a...)
+	fmt.Printf(ColorGreen+"OK  "+format+ColorReset+"\n", a...)
 }
 
 func PrintInfo(format string, a ...interface{}) {
@@ -37,7 +37,7 @@ func PrintInfo(format string, a ...interface{}) {
 		fmt.Printf("..  "+format+"\n", a...)
 		return
 	}
-	fmt.Printf(ColorCyan+"ℹ "+format+ColorReset+"\n", a...)
+	fmt.Printf(ColorCyan+"..  "+format+ColorReset+"\n", a...)
 }
 
 func PrintWarning(format string, a ...interface{}) {
@@ -45,7 +45,7 @@ func PrintWarning(format string, a ...interface{}) {
 		fmt.Printf("!!  "+format+"\n", a...)
 		return
 	}
-	fmt.Printf(ColorYellow+"⚠ "+format+ColorReset+"\n", a...)
+	fmt.Printf(ColorYellow+"!!  "+format+ColorReset+"\n", a...)
 }
 
 func PrintError(format string, a ...interface{}) {
@@ -53,26 +53,28 @@ func PrintError(format string, a ...interface{}) {
 		fmt.Printf("ERR "+format+"\n", a...)
 		return
 	}
-	fmt.Printf(ColorRed+ColorBold+"✘ "+format+ColorReset+"\n", a...)
+	fmt.Printf(ColorRed+ColorBold+"ERR "+format+ColorReset+"\n", a...)
 }
 
 func Banner() {
+	lines := []string{
+		"minibox  —  minimal container engine (linux)",
+		"https://github.com/chaitu426/minibox",
+		"",
+	}
+
 	if !colorEnabled() {
-		fmt.Println("minibox")
-		fmt.Println("Low-level container engine for Linux")
-		fmt.Println()
+		for _, l := range lines {
+			fmt.Println(l)
+		}
 		return
 	}
-	fmt.Println(ColorCyan + ColorBold + `
-  __  __ _       _      _____             _             
- |  \/  (_)     (_)    |  __ \           | |            
- | \  / |_ _ __  _ ____| |  | | ___   ___| | _____ _ __ 
- | |\/| | | '_ \| |____| |  | |/ _ \ / __| |/ / _ \ '__|
- | |  | | | | | | |    | |__| | (_) | (__|   <  __/ |   
- |_|  |_|_|_| |_|_|    |_____/ \___/ \___|_|\_\___|_|   
-` + ColorReset)
-	fmt.Println(ColorWhite + "       Low-Level Container Engine for Linux" + ColorReset)
-	fmt.Println()
+
+	fmt.Print(ColorCyan + ColorBold)
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	fmt.Print(ColorReset)
 }
 
 func colorEnabled() bool {

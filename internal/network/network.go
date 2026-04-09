@@ -106,6 +106,14 @@ func SetupContainerNetwork(pid int, containerID string, ip string, portMap map[s
 			return fmt.Errorf("invalid container port %q: %w", containerPort, err)
 		}
 	}
+
+	// Ensure bridge exists. This makes daemon startup faster because the daemon can
+	// bring up the bridge lazily on first container run.
+	if !linkExists(BridgeName) {
+		if err := SetupBridge(); err != nil {
+			return fmt.Errorf("bridge not ready: %w", err)
+		}
+	}
 	hostVethName := "veth-" + containerID[:8]
 	peerVethName := "vetp-" + containerID[:8]
 
@@ -189,13 +197,13 @@ func SetupContainerNetwork(pid int, containerID string, ip string, portMap map[s
 		_ = ipt.AppendUnique("nat", "OUTPUT", "-p", "tcp", "-o", "lo", "--dport", hostPort, "-j", "DNAT", "--to-destination", dest)
 		// FORWARD (Allow)
 		_ = ipt.AppendUnique("filter", "FORWARD", "-p", "tcp", "-d", ip, "--dport", containerPort, "-j", "ACCEPT")
-		
+
 		if proxy, err := startTCPProxy(hostPort, ip, containerPort); err == nil {
 			proxies = append(proxies, proxy)
 		} else {
-			fmt.Printf("[network] Warning: failed to start proxy for %s: %v\n", hostPort, err)
+			fmt.Printf("[warn] network proxy host_port=%s err=%v\n", hostPort, err)
 		}
-		
+
 		fmt.Printf("[network] Port mapping: localhost:%s → container:%s\n", hostPort, containerPort)
 	}
 
@@ -314,7 +322,7 @@ func startTCPProxy(hostPort, targetIP, targetPort string) (io.Closer, error) {
 					return
 				}
 				defer backend.Close()
-				
+
 				// Copy data bidirectionally
 				go io.Copy(backend, c)
 				io.Copy(c, backend)

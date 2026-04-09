@@ -18,10 +18,17 @@ import (
 	"time"
 
 	"github.com/chaitu426/minibox/internal/utils"
+	"github.com/chaitu426/minibox/internal/version"
 )
 
 func exitf(code int, format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	msg := fmt.Sprintf(format, args...)
+	// Avoid double-prefixing if caller already used a bracketed prefix.
+	if strings.HasPrefix(msg, "[") {
+		fmt.Fprintln(os.Stderr, msg)
+	} else {
+		fmt.Fprintf(os.Stderr, "[error] %s\n", msg)
+	}
 	os.Exit(code)
 }
 
@@ -192,11 +199,11 @@ func logsCommand() {
 	}
 	resp, err := apiGET("/containers/logs?id=" + url.QueryEscape(os.Args[2]))
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -222,48 +229,48 @@ func runCommand() {
 		case "-m":
 			i++
 			if i >= len(os.Args) {
-				exitf(2, "Error: -m requires a value (MB)")
+				exitf(2, "-m requires a value (MB)")
 			}
 			memoryMB, _ = strconv.Atoi(os.Args[i])
 			i++
 		case "-c":
 			i++
 			if i >= len(os.Args) {
-				exitf(2, "Error: -c requires a value")
+				exitf(2, "-c requires a value")
 			}
 			cpuMax, _ = strconv.Atoi(os.Args[i])
 			i++
 		case "-p":
 			i++
 			if i >= len(os.Args) {
-				exitf(2, "Error: -p requires an argument (host:container)")
+				exitf(2, "-p requires an argument (host:container)")
 			}
 			parts := strings.SplitN(os.Args[i], ":", 2)
 			if len(parts) != 2 {
-				exitf(2, "Error: invalid port mapping %q (expected host:container)", os.Args[i])
+				exitf(2, "invalid port mapping %q (expected host:container)", os.Args[i])
 			}
 			portMap[parts[0]] = parts[1]
 			i++
 		case "-v", "--volume":
 			i++
 			if i >= len(os.Args) {
-				exitf(2, "Error: -v requires an argument (host_path:container_path)")
+				exitf(2, "-v requires an argument (host_path:container_path)")
 			}
 			parts := strings.SplitN(os.Args[i], ":", 2)
 			if len(parts) != 2 {
-				exitf(2, "Error: invalid volume mapping %q (expected host:container)", os.Args[i])
+				exitf(2, "invalid volume mapping %q (expected host:container)", os.Args[i])
 			}
 			// Resolve absolute path for host mapping
 			absHost, err := filepath.Abs(parts[0])
 			if err != nil {
-				exitf(1, "Error resolving absolute path for volume %q: %v", parts[0], err)
+				exitf(1, "resolving absolute path for volume %q: %v", parts[0], err)
 			}
 			volumeMap[absHost] = parts[1]
 			i++
 		case "-e", "--env":
 			i++
 			if i >= len(os.Args) {
-				exitf(2, "Error: -e requires an argument (KEY=VAL)")
+				exitf(2, "-e requires an argument (KEY=VAL)")
 			}
 			userEnv = append(userEnv, os.Args[i])
 			i++
@@ -308,7 +315,7 @@ doneFlags:
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 
 	// Stream output line-by-line for real-time display
@@ -322,6 +329,133 @@ doneFlags:
 		}
 	}
 	utils.PrintInfo("Container execution finished.")
+}
+
+func dbCommand() {
+	// Usage:
+	//   minibox db run [--name NAME] [-p host:container] [-e KEY=VAL] [--data /path/in/container] [--cmd "..." ] <image> [command...]
+	if len(os.Args) < 3 {
+		exitf(2, "Usage: minibox db run [--name name] [--data /container/path] [--cmd \"...\"] [-p host:container] [-e KEY=VAL] <image> [command...]")
+	}
+	if os.Args[2] != "run" {
+		exitf(2, "Usage: minibox db run [--name name] [--data /container/path] [--cmd \"...\"] [-p host:container] [-e KEY=VAL] <image> [command...]")
+	}
+
+	detached := true // DB containers should typically run detached.
+	name := ""
+	dataPath := ""
+	cmdStr := ""
+	portMap := map[string]string{}
+	var userEnv []string
+
+	i := 3
+	for i < len(os.Args) {
+		switch os.Args[i] {
+		case "--name":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "--name requires a value")
+			}
+			name = os.Args[i]
+			i++
+		case "--data":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "--data requires a value (container path)")
+			}
+			dataPath = os.Args[i]
+			i++
+		case "--cmd":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "--cmd requires a value")
+			}
+			cmdStr = os.Args[i]
+			i++
+		case "-p":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "-p requires an argument (host:container)")
+			}
+			parts := strings.SplitN(os.Args[i], ":", 2)
+			if len(parts) != 2 {
+				exitf(2, "invalid port mapping %q (expected host:container)", os.Args[i])
+			}
+			portMap[parts[0]] = parts[1]
+			i++
+		case "-e", "--env":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "-e requires an argument (KEY=VAL)")
+			}
+			userEnv = append(userEnv, os.Args[i])
+			i++
+		case "-d":
+			// accepted for symmetry; db run is detached by default
+			detached = true
+			i++
+		default:
+			goto doneFlags
+		}
+	}
+doneFlags:
+
+	if i >= len(os.Args) {
+		exitf(2, "Usage: minibox db run [--name name] [--data /container/path] [--cmd \"...\"] [-p host:container] [-e KEY=VAL] <image> [command...]")
+	}
+
+	image := os.Args[i]
+	var cmdArgs []string
+	if len(os.Args) > i+1 {
+		cmdArgs = os.Args[i+1:]
+	}
+	if len(cmdArgs) == 0 && cmdStr != "" {
+		// Keep parsing minimal: use /bin/sh -c for a single command string.
+		cmdArgs = []string{"/bin/sh", "-c", cmdStr}
+	}
+
+	if name == "" {
+		// Stable but simple default: derive from image name.
+		name = strings.ReplaceAll(image, ":", "-")
+		name = strings.ReplaceAll(name, ".", "-")
+	}
+	if dataPath == "" {
+		// Generic default; user should override for Postgres/MySQL etc.
+		dataPath = "/var/lib/minibox-data"
+	}
+
+	// Named volume: daemon resolves to DataRoot/volumes/<name>.
+	namedVolumes := map[string]string{
+		name + "-data": dataPath,
+	}
+
+	// DB-friendly defaults (best effort; can be extended later):
+	// - prefer to survive OOM
+	// - give higher IO weight
+	reqBody := map[string]interface{}{
+		"image":         image,
+		"command":       cmdArgs,
+		"detached":      detached,
+		"ports":         portMap,
+		"named_volumes": namedVolumes,
+		"env":           userEnv,
+		"io_weight":     800,
+		"oom_score_adj": -900,
+		"db_mode":       true,
+	}
+
+	jsonData, _ := json.Marshal(reqBody)
+	utils.PrintInfo("Launching database container image=%s volume=%s -> %s", image, name+"-data", dataPath)
+
+	resp, err := apiPOST("/containers/run", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		exitf(1, "Failed to start db container: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		exitf(1, "%s", readHTTPError(resp))
+	}
+	io.Copy(os.Stdout, resp.Body)
 }
 
 func psCommand() {
@@ -350,7 +484,7 @@ func psCommand() {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 
 	var containers map[string]map[string]interface{}
@@ -519,7 +653,7 @@ func imagesCommand() {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 
 	type imageInfo struct {
@@ -561,11 +695,11 @@ func saveCommand() {
 	}
 	resp, err := apiPOST("/images/save?image="+url.QueryEscape(image)+"&path="+url.QueryEscape(outPath), "application/x-www-form-urlencoded", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -580,11 +714,11 @@ func loadCommand() {
 	}
 	resp, err := apiPOST("/images/load?path="+url.QueryEscape(inPath), "application/x-www-form-urlencoded", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -595,11 +729,11 @@ func rmiCommand() {
 	}
 	resp, err := apiPOST("/images/remove?image="+url.QueryEscape(os.Args[2]), "application/x-www-form-urlencoded", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -621,11 +755,11 @@ func stopCommand() {
 	}
 	resp, err := apiPOST(path, "application/x-www-form-urlencoded", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -636,11 +770,11 @@ func killCommand() {
 	}
 	resp, err := apiPOST("/containers/kill?id="+url.QueryEscape(os.Args[2]), "application/x-www-form-urlencoded", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -651,11 +785,11 @@ func rmCommand() {
 	}
 	resp, err := apiPOST("/containers/remove?id="+url.QueryEscape(os.Args[2]), "application/x-www-form-urlencoded", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
 }
@@ -710,7 +844,7 @@ func statsCommand() {
 			// readHTTPError consumes the body; close then exit.
 			msg := readHTTPError(resp)
 			resp.Body.Close()
-			exitf(1, "Error: %s", msg)
+			exitf(1, "%s", msg)
 		}
 
 		var s struct {
@@ -728,7 +862,7 @@ func statsCommand() {
 
 		// Refresh UI: Clear screen and show a compact header
 		fmt.Print("\033[H\033[2J")
-		fmt.Printf(utils.ColorCyan+utils.ColorBold+"📊 LIVE STATS: %s "+utils.ColorReset+"(Ctrl+C to stop)\n\n", id)
+		fmt.Printf(utils.ColorCyan+utils.ColorBold+"STATS: %s "+utils.ColorReset+"(Ctrl+C to stop)\n\n", id)
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		header := fmt.Sprintf("%sCPU %%\tMEM USAGE / LIMIT\tMEM %%\tNET I/O\tBLOCK I/O\tPIDS%s", utils.ColorBold, utils.ColorReset)
@@ -763,12 +897,16 @@ func statsCommand() {
 
 func systemCommand() {
 	if len(os.Args) < 3 || os.Args[2] != "prune" {
-		exitf(2, "Usage: minibox system prune")
+		exitf(2, "Usage: minibox system prune [--build-cache]")
 	}
 
-	resp, err := apiPOST("/system/prune", "application/json", nil)
+	path := "/system/prune"
+	if len(os.Args) > 3 && os.Args[3] == "--build-cache" {
+		path += "?build_cache=1"
+	}
+	resp, err := apiPOST(path, "application/json", nil)
 	if err != nil {
-		exitf(1, "Error: %v", err)
+		exitf(1, "%v", err)
 	}
 	defer resp.Body.Close()
 
@@ -777,9 +915,11 @@ func systemCommand() {
 	}
 
 	var report struct {
-		BlobsRemoved     int   `json:"blobs_removed"`
-		BytesFreed       int64 `json:"bytes_freed"`
-		FUSEMountsKilled int   `json:"fuse_mounts_killed"`
+		BlobsRemoved         int   `json:"blobs_removed"`
+		BytesFreed           int64 `json:"bytes_freed"`
+		FUSEMountsKilled     int   `json:"fuse_mounts_killed"`
+		BuildCacheRemoved    int   `json:"build_cache_removed"`
+		BuildCacheBytesFreed int64 `json:"build_cache_bytes_freed"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
 		fmt.Println("Failed to decode response:", err)
@@ -790,6 +930,10 @@ func systemCommand() {
 	fmt.Printf("  - Active FUSE mounts killed: %d\n", report.FUSEMountsKilled)
 	fmt.Printf("  - Orphaned blobs removed:   %d\n", report.BlobsRemoved)
 	fmt.Printf("  - Disk space recovered:     %s\n", formatBytes(uint64(report.BytesFreed)))
+	if report.BuildCacheRemoved > 0 || report.BuildCacheBytesFreed > 0 {
+		fmt.Printf("  - Build cache entries removed: %d\n", report.BuildCacheRemoved)
+		fmt.Printf("  - Build cache recovered:       %s\n", formatBytes(uint64(report.BuildCacheBytesFreed)))
+	}
 }
 
 func execCommand() {
@@ -812,11 +956,11 @@ func execCommand() {
 	// Resolve PID from daemon state
 	resp, err := apiGET("/containers")
 	if err != nil {
-		exitf(1, "Connection to daemon failed: %v", err)
+		exitf(1, "connection to daemon failed: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Error: %s", readHTTPError(resp))
+		exitf(1, "%s", readHTTPError(resp))
 	}
 
 	var containers map[string]map[string]any
@@ -869,7 +1013,7 @@ func main() {
 		return
 	}
 	if command == "--version" || command == "version" {
-		fmt.Println("minibox dev")
+		fmt.Printf("minibox %s\n", version.Version)
 		return
 	}
 
@@ -880,6 +1024,8 @@ func main() {
 		buildCommand()
 	case "run":
 		runCommand()
+	case "db":
+		dbCommand()
 	case "ps":
 		psCommand()
 	case "stats":

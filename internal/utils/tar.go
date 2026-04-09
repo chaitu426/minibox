@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"os"
+	"bufio"
 	"path/filepath"
 )
 
@@ -160,7 +161,15 @@ func CopyDirTar(src, dst string, ignore func(string) bool) error {
 // CreateTarGz creates a gzip compressed tarball from a source directory.
 func CreateTarGz(src string, writers ...io.Writer) error {
 	mw := io.MultiWriter(writers...)
-	gw := gzip.NewWriter(mw)
+	
+	// Add buffering to minimize syscalls during compression and hashing
+	bw := bufio.NewWriterSize(mw, 128*1024) // 128KB buffer
+	defer bw.Flush()
+
+	gw, err := gzip.NewWriterLevel(bw, gzip.BestSpeed)
+	if err != nil {
+		return err
+	}
 	defer gw.Close()
 
 	tw := tar.NewWriter(gw)

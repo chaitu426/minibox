@@ -30,7 +30,7 @@ type Block struct {
 	AutoDeps     bool // whether to run auto-dependency detection
 }
 
-// Cfile holds all extracted metadata required to build an image (Phase 5: DAG syntax)
+// Cfile holds the parsed MiniBox build spec.
 type Cfile struct {
 	BaseImage string
 	Blocks    []*Block

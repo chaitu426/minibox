@@ -158,7 +158,10 @@ func LoadImageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func SystemPruneHandler(w http.ResponseWriter, r *http.Request) {
-	report, err := storage.PruneSystem()
+	opts := storage.PruneOptions{
+		BuildCache: r.URL.Query().Get("build_cache") == "1",
+	}
+	report, err := storage.PruneSystemWithOptions(opts)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to prune: %v", err), http.StatusInternalServerError)
 		return

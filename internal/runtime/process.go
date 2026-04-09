@@ -38,6 +38,7 @@ type ContainerOptions struct {
 	IOWeight    int               `json:"io_weight"`
 	OOMScoreAdj int               `json:"oom_score_adj"`
 	Sysctls     map[string]string `json:"sysctls"`
+	DBMode      bool              `json:"db_mode"`
 }
 
 // RunCommand runs a container and returns all output at once (used for detached mode).
@@ -49,7 +50,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		return nil, fmt.Errorf("no command provided")
 	}
 
-	// Resolved Image Metadata (Phase 3 Optimization: Pre-parse for child)
+	// Resolve image metadata early so the child doesn't need to parse OCI again.
 	imgConfig, err := ResolveImageConfig(image)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve image config: %v", err)
@@ -65,7 +66,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	volumesJSON, _ := json.Marshal(volumes)
 	userEnvJSON, _ := json.Marshal(userEnv)
 
-optsJSON, _ := json.Marshal(opts)
+	optsJSON, _ := json.Marshal(opts)
 	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	// Detached containers must not inherit the request context; the HTTP handler returns
 	// immediately and cancels it, which would kill the container process.
@@ -118,7 +119,7 @@ optsJSON, _ := json.Marshal(opts)
 	// Set up container networking
 	ip := network.AllocateIP()
 	if netErr := network.SetupContainerNetwork(cmd.Process.Pid, containerID, ip, portMap); netErr != nil {
-		fmt.Printf("[network] Warning: network setup failed: %v\n", netErr)
+		fmt.Printf("[warn] network setup failed: %v\n", netErr)
 	}
 
 	info := ContainerInfo{
@@ -220,7 +221,7 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 		return fmt.Errorf("no command provided")
 	}
 
-	// Resolved Image Metadata (Phase 3 Optimization: Pre-parse for child)
+	// Resolve image metadata early so the child doesn't need to parse OCI again.
 	imgConfig, err := ResolveImageConfig(image)
 	if err != nil {
 		return fmt.Errorf("failed to resolve image config: %v", err)
@@ -236,7 +237,7 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 	volumesJSON, _ := json.Marshal(volumes)
 	userEnvJSON, _ := json.Marshal(userEnv)
 
-optsJSON, _ := json.Marshal(opts)
+	optsJSON, _ := json.Marshal(opts)
 	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
 	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
@@ -275,7 +276,7 @@ optsJSON, _ := json.Marshal(opts)
 	// Set up container networking
 	ip := network.AllocateIP()
 	if netErr := network.SetupContainerNetwork(cmd.Process.Pid, containerID, ip, portMap); netErr != nil {
-		fmt.Fprintf(out, "[network] Warning: network setup failed: %v\n", netErr)
+		fmt.Fprintf(out, "[warn] network setup failed: %v\n", netErr)
 	} else {
 		fmt.Fprintf(out, "[network] Container IP: %s\n", ip)
 	}
@@ -362,7 +363,7 @@ func ResolveImageLayers(imageName string) ([]string, error) {
 
 	var layers []string
 	extractedRoot := filepath.Join(config.DataRoot, "extracted")
-	
+
 	type layerResult struct {
 		index int
 		path  string
@@ -374,6 +375,14 @@ func ResolveImageLayers(imageName string) ([]string, error) {
 		go func(idx int, layer models.OCIDescriptor) {
 			digest := strings.TrimPrefix(layer.Digest, "sha256:")
 			blobPath := filepath.Join(config.DataRoot, "blobs", "sha256", digest)
+
+			// Fast path: if we already have an extracted view, use it directly.
+			// This avoids tar extraction and FUSE lazy-mount overhead on startup.
+			destPath := filepath.Join(extractedRoot, digest)
+			if info, err := os.Stat(destPath); err == nil && info.IsDir() && !isDirEmpty(destPath) {
+				results <- layerResult{idx, destPath, nil}
+				return
+			}
 
 			// Try Lazy Loading if index exists
 			index, err := storage.GetLayerIndex(digest)
@@ -390,7 +399,7 @@ func ResolveImageLayers(imageName string) ([]string, error) {
 			if err == nil {
 				mountPath := filepath.Join(config.DataRoot, "lazy", digest)
 				cachePath := filepath.Join(config.DataRoot, "cache", digest)
-				fmt.Printf("➜ Lazy-mounting layer: %s\n", digest[:12])
+				fmt.Printf("[runtime] lazy-mount layer=%s\n", digest[:12])
 				if err := lazy.StartLazyMount(blobPath, mountPath, cachePath, index); err == nil {
 					results <- layerResult{idx, mountPath, nil}
 					return
@@ -398,10 +407,9 @@ func ResolveImageLayers(imageName string) ([]string, error) {
 			}
 
 			// Fallback to full extraction
-			destPath := filepath.Join(extractedRoot, digest)
 			os.MkdirAll(destPath, 0755)
 			if info, err := os.Stat(destPath); os.IsNotExist(err) || (err == nil && info.IsDir() && isDirEmpty(destPath)) {
-				fmt.Printf("➜ Extracting layer: %s\n", digest[:12])
+				fmt.Printf("[runtime] extract layer=%s\n", digest[:12])
 				if err := utils.ExtractTarGz(blobPath, destPath); err != nil {
 					results <- layerResult{idx, "", fmt.Errorf("failed to extract layer %s: %v", digest, err)}
 					return

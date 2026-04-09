@@ -13,13 +13,24 @@ import (
 )
 
 type PruneReport struct {
-	BlobsRemoved     int   `json:"blobs_removed"`
-	BytesFreed       int64 `json:"bytes_freed"`
-	FUSEMountsKilled int   `json:"fuse_mounts_killed"`
+	BlobsRemoved         int   `json:"blobs_removed"`
+	BytesFreed           int64 `json:"bytes_freed"`
+	FUSEMountsKilled     int   `json:"fuse_mounts_killed"`
+	BuildCacheRemoved    int   `json:"build_cache_removed,omitempty"`
+	BuildCacheBytesFreed int64 `json:"build_cache_bytes_freed,omitempty"`
 }
 
-// PruneSystem completely garbage collects orphaned layers, blobs, and lazy FUSE mounts
+type PruneOptions struct {
+	BuildCache bool
+}
+
+// PruneSystem completely garbage collects orphaned blobs and lazy mounts.
+// Optional: can also delete the build cache (DataRoot/layers) when requested.
 func PruneSystem() (*PruneReport, error) {
+	return PruneSystemWithOptions(PruneOptions{})
+}
+
+func PruneSystemWithOptions(opts PruneOptions) (*PruneReport, error) {
 	report := &PruneReport{}
 
 	indexPath := filepath.Join(config.DataRoot, "index.json")
@@ -102,6 +113,21 @@ func PruneSystem() (*PruneReport, error) {
 
 	// 5. Clean up old tmp layers that failed to finish
 	os.RemoveAll(filepath.Join(config.DataRoot, "tmp"))
+
+	// 6. Optional: remove build cache layers (content-addressed upperdirs).
+	if opts.BuildCache {
+		layersDir := filepath.Join(config.DataRoot, "layers")
+		entries, _ := os.ReadDir(layersDir)
+		for _, e := range entries {
+			// Best-effort: count bytes and delete directories/files.
+			full := filepath.Join(layersDir, e.Name())
+			if info, err := os.Stat(full); err == nil {
+				report.BuildCacheBytesFreed += info.Size()
+			}
+			_ = os.RemoveAll(full)
+			report.BuildCacheRemoved++
+		}
+	}
 
 	return report, nil
 }

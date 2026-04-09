@@ -86,7 +86,7 @@ func IndexLayer(blobPath string) error {
 
 	indexPath = blobPath + ".index.json"
 	data, _ := json.MarshalIndent(index, "", "  ")
-	fmt.Printf("➜ Generated OCI Index: %s\n", indexPath)
+	fmt.Printf("[storage] generated layer index: %s\n", indexPath)
 	return os.WriteFile(indexPath, data, 0644)
 }
 

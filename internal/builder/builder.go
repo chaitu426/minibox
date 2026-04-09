@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,9 +23,9 @@ import (
 
 	"github.com/chaitu426/minibox/internal/config"
 	"github.com/chaitu426/minibox/internal/models"
+	containerRuntime "github.com/chaitu426/minibox/internal/runtime"
 	"github.com/chaitu426/minibox/internal/storage"
 	"github.com/chaitu426/minibox/internal/utils"
-	containerRuntime "github.com/chaitu426/minibox/internal/runtime"
 )
 
 var blockPrefixRe = regexp.MustCompile(`^\[[A-Za-z0-9._-]+\]\s`)
@@ -32,10 +33,10 @@ var blockPrefixRe = regexp.MustCompile(`^\[[A-Za-z0-9._-]+\]\s`)
 // prefixLineWriter prefixes each output line and writes it atomically, so parallel blocks
 // don't interleave partial lines in the streamed build logs.
 type prefixLineWriter struct {
-	mu     *sync.Mutex
-	prefix string
-	out    io.Writer
-	buf    []byte
+	mu           *sync.Mutex
+	prefix       string
+	out          io.Writer
+	buf          []byte
 	lastActivity time.Time
 }
 
@@ -147,12 +148,12 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 	if err != nil {
 		return fmt.Errorf("failed to resolve base image %s: %w", cfile.BaseImage, err)
 	}
-	
+
 	fmt.Fprintf(out, "[base] %s: ready (%s)\n", cfile.BaseImage, fmtDur(time.Since(t0)))
 	currentHash = utils.GetHash(cfile.BaseImage)
 	lowerDirs = baseLowerDirs
 
-	// ── Phase 5: DAG-based block execution ────────────────────────────────
+	// DAG-based block execution.
 	if len(cfile.Blocks) > 0 {
 		if err := buildFromBlocks(ctx, cfile, contextDir, layersPath, blobsPath, ignoreFn,
 			&currentHash, &lowerDirs, baseEnv, out); err != nil {
@@ -189,7 +190,7 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 		}
 	}
 
-	// 3. Finalize OCI Image (Phase 3 Optimization: Parallel Layer Processing)
+	// Finalize OCI image (layer blobs + config + manifest + index).
 	tFinalize := time.Now()
 	fmt.Fprintf(out, "[finalize] writing %d layer(s)\n", len(lowerDirs))
 	layerDescriptors := make([]models.OCIDescriptor, len(lowerDirs))
@@ -203,8 +204,17 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 	}
 	results := make(chan layerResult, len(lowerDirs))
 
+	// Limit concurrency to avoid resource exhaustion
+	maxWorkers := runtime.NumCPU()
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
+	sem := make(chan struct{}, maxWorkers)
+
 	for i, layerDir := range lowerDirs {
+		sem <- struct{}{} // Acquire
 		go func(idx int, lDir string) {
+			defer func() { <-sem }() // Release
 			digest, size, err := saveLayerAsBlob(lDir, blobsPath, out)
 			results <- layerResult{idx, digest, size, err}
 		}(i, layerDir)
@@ -281,14 +291,14 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 	fmt.Fprintf(out, "[finalize] done (%s)\n", fmtDur(time.Since(tFinalize)))
 	fmt.Fprintf(out, "[build] DONE image=%s manifest=%s (%s)\n", imageName, manifestDigest[:12], fmtDur(time.Since(buildStart)))
 
-	// Phase 6: Invalidate the daemon's image config cache to ensure the new build is picked up immediately
+	// Invalidate daemon image config cache so new builds are picked up immediately.
 	containerRuntime.InvalidateImageCache(imageName)
 
 	return nil
 }
 
 func fmtDur(d time.Duration) string {
-	// Docker-like compact durations.
+	// Compact durations.
 	if d < time.Second {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
@@ -301,12 +311,15 @@ func fmtDur(d time.Duration) string {
 }
 
 func saveLayerAsBlob(layerDir string, blobsPath string, out io.Writer) (string, int64, error) {
-	// Optimization: check if we already have a cached digest for this layer directory
+	// If we already have a cached digest for this layer directory, skip recompression.
 	digestPath := layerDir + ".digest"
 	if data, err := os.ReadFile(digestPath); err == nil {
 		cachedDigest := strings.TrimSpace(string(data))
 		blobPath := filepath.Join(blobsPath, cachedDigest)
 		if fi, err := os.Stat(blobPath); err == nil {
+			// Fast-start path: ensure runtime can use an already-extracted view without
+			// unpacking tarballs on `run`.
+			_ = ensureExtractedLayerView(cachedDigest, layerDir)
 			// Found cached blob, skip compression
 			return cachedDigest, fi.Size(), nil
 		}
@@ -341,14 +354,39 @@ func saveLayerAsBlob(layerDir string, blobsPath string, out io.Writer) (string, 
 	}
 
 	fi, _ := os.Stat(blobPath)
-	
-	// Phase 4 Optimization: Index the layer for Lazy Loading
-	_ = storage.IndexLayer(blobPath)
-	
+
+	// Fast-start path: ensure runtime can use a ready directory layer.
+	_ = ensureExtractedLayerView(digest, layerDir)
+
+	// Optional: Index the layer for Lazy Loading.
+	// Indexing can be expensive for large layers (e.g., node_modules). Do it async so
+	// `[finalize]` doesn't block; the daemon can still generate it later if needed.
+	// Disable entirely with MINIBOX_INDEX_LAYERS=0.
+	if os.Getenv("MINIBOX_INDEX_LAYERS") != "0" {
+		go func(p string) { _ = storage.IndexLayer(p) }(blobPath)
+	}
+
 	return digest, fi.Size(), nil
 }
 
-// ─── Phase 5: DAG Block Scheduler ─────────────────────────────────────────────
+func ensureExtractedLayerView(digest string, layerDir string) error {
+	if digest == "" || layerDir == "" {
+		return nil
+	}
+	extractedRoot := filepath.Join(config.DataRoot, "extracted")
+	dest := filepath.Join(extractedRoot, digest)
+	_ = os.MkdirAll(extractedRoot, 0755)
+
+	// If it already exists (dir or symlink), don't touch.
+	if _, err := os.Lstat(dest); err == nil {
+		return nil
+	}
+	// Prefer a symlink (instant, no copy). This is safe because layerDir is content-addressed
+	// and immutable by convention (built layers are not modified after finalize).
+	return os.Symlink(layerDir, dest)
+}
+
+// DAG block scheduler.
 
 // buildFromBlocks executes the block dependency graph, running ready blocks concurrently.
 func buildFromBlocks(ctx context.Context, cfile *models.Cfile, contextDir, layersPath, blobsPath string,
@@ -448,7 +486,7 @@ func buildFromBlocks(ctx context.Context, cfile *models.Cfile, contextDir, layer
 						}
 					}
 				}
-				
+
 				for _, dep := range b.Needs {
 					if wd, ok := blockWorkdir[dep]; ok && wd != "/" {
 						inheritedWorkdir = wd
@@ -465,7 +503,7 @@ func buildFromBlocks(ctx context.Context, cfile *models.Cfile, contextDir, layer
 		waveBuilt := 0
 		var waveDur time.Duration
 		var waveErr error
-		
+
 		for i := 0; i < len(wave); i++ {
 			res := <-results
 			if res.err != nil {
@@ -482,7 +520,7 @@ func buildFromBlocks(ctx context.Context, cfile *models.Cfile, contextDir, layer
 			blockLayerDir[res.name] = res.layerDir
 			blockWorkdir[res.name] = res.workdir
 		}
-		
+
 		if waveErr != nil {
 			return waveErr
 		}
@@ -567,7 +605,7 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 		fmt.Fprintf(out, "CACHED (%s)\n", fmtDur(time.Since(blockStart)))
 		return layerDir, finalWorkdir, true, time.Since(blockStart), nil
 	}
-	
+
 	// If the directory exists but the marker doesn't, it was an incomplete or failed build.
 	// Clean it up so we can start fresh.
 	if _, err := os.Stat(layerDir); err == nil {
@@ -579,14 +617,14 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 	allLowers := append(baseLowerDirs, depLowers...)
 
 	tmpUpper := filepath.Join(config.DataRoot, "tmp", layerHash, "upper")
-	
+
 	// Clean slate: remove any leftover from a previously aborted build
 	os.RemoveAll(filepath.Join(config.DataRoot, "tmp", layerHash))
 	os.MkdirAll(tmpUpper, 0755)
 
 	tmpWork := filepath.Join(config.DataRoot, "tmp", layerHash, "work")
 	tmpRoot := filepath.Join(config.DataRoot, "tmp", layerHash, "root")
-	
+
 	setupMounts := func() error {
 		if _, err := os.Stat(tmpRoot); err == nil {
 			return nil // Already setup
@@ -622,7 +660,7 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 		// Set up persistent mounts inside the chroot
 		os.MkdirAll(filepath.Join(tmpRoot, "etc"), 0755)
 		utils.CopyFile("/etc/resolv.conf", filepath.Join(tmpRoot, "etc", "resolv.conf"))
-		
+
 		tmpDirPath := filepath.Join(tmpRoot, "tmp")
 		os.MkdirAll(tmpDirPath, 01777)
 		os.Chmod(tmpDirPath, 01777)
@@ -633,7 +671,7 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 		os.MkdirAll(devPath, 0755)
 		os.MkdirAll(procPath, 0755)
 		os.MkdirAll(sysPath, 0755)
-		
+
 		nullDev := filepath.Join(devPath, "null")
 		zeroDev := filepath.Join(devPath, "zero")
 		randomDev := filepath.Join(devPath, "random")
@@ -655,10 +693,11 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 
 	cleanupMounts := func() {
 		if needsMount {
-			syscall.Unmount(procPath, 0)
-			syscall.Unmount(sysPath, 0)
-			if err := syscall.Unmount(tmpRoot, 0); err != nil {
-				fmt.Fprintf(out, "[builder] Warning: failed to unmount overlay: %v\n", err)
+			_ = syscall.Unmount(procPath, 0)
+			_ = syscall.Unmount(sysPath, 0)
+			// Unmounting can race with earlier failures; only log in debug mode.
+			if err := syscall.Unmount(tmpRoot, 0); err != nil && os.Getenv("MINIBOX_DEBUG") == "1" {
+				fmt.Fprintf(out, "[builder] unmount overlay: %v\n", err)
 			}
 		}
 	}
@@ -688,7 +727,7 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 			if len(inst.Args) < 2 {
 				continue
 			}
-			
+
 			// Handle COPY FROM=block src dest
 			if strings.HasPrefix(strings.ToUpper(inst.Args[0]), "FROM=") {
 				if len(inst.Args) < 3 {
@@ -699,10 +738,10 @@ func buildBlock(b *models.Block, parentHash string, depLowers []string,
 				if !ok || layerDir == "" {
 					return "", "", false, time.Since(blockStart), fmt.Errorf("copy FROM block %s not found or not completed", fromBlockName)
 				}
-				
+
 				src := filepath.Join(layerDir, strings.TrimPrefix(inst.Args[1], "/"))
 				dest := filepath.Join(tmpUpper, strings.TrimPrefix(inst.Args[2], "/"))
-				
+
 				fmt.Fprintf(out, "copy %s -> %s\n", inst.Args[1], inst.Args[2])
 				if err := utils.CopyRecursive(src, dest, nil); err != nil {
 					return "", "", false, time.Since(blockStart), fmt.Errorf("copy %v: %w", inst.Args, err)
@@ -770,7 +809,7 @@ func runAutoDeps(root, upper string, lowers []string, work, workdir string, env 
 		// Set up /proc, /tmp, /dev, DNS inside the chroot (required for pip/npm)
 		os.MkdirAll(filepath.Join(tmpRoot, "etc"), 0755)
 		utils.CopyFile("/etc/resolv.conf", filepath.Join(tmpRoot, "etc", "resolv.conf"))
-		
+
 		tmpDirPath := filepath.Join(tmpRoot, "tmp")
 		os.MkdirAll(tmpDirPath, 01777)
 		os.Chmod(tmpDirPath, 01777)
@@ -781,7 +820,7 @@ func runAutoDeps(root, upper string, lowers []string, work, workdir string, env 
 		os.MkdirAll(devPath, 0755)
 		os.MkdirAll(procPath, 0755)
 		os.MkdirAll(sysPath, 0755)
-		
+
 		nullDev := filepath.Join(devPath, "null")
 		zeroDev := filepath.Join(devPath, "zero")
 		randomDev := filepath.Join(devPath, "random")
@@ -910,8 +949,8 @@ func resolveBaseImage(ctx context.Context, baseImage string, out io.Writer) ([]s
 		if _, err := os.Stat(baseImage); err == nil {
 			baseImageSafe := strings.ReplaceAll(filepath.Base(baseImage), ".", "_")
 			basePath := filepath.Join(config.DataRoot, "base_layers", "archive_"+baseImageSafe)
-			
-			// Optimization: skip if already extracted
+
+			// Skip if already extracted.
 			if _, err := os.Stat(basePath); os.IsNotExist(err) {
 				os.MkdirAll(basePath, 0755)
 				fmt.Fprintf(out, "[base] %s: extracting local archive...\n", baseImage)
@@ -1141,5 +1180,3 @@ func buildParallelSteps(instructions []models.Instruction, startStep int, curren
 
 	return nil
 }
-
-
