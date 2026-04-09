@@ -171,7 +171,7 @@ Image removal (`rmi`) affects OCI index/blobs, but build cache is separate. To f
 minibox system prune --build-cache
 ```
 
-For deeper details: `docs/ARCHITECTURE.md` and `docs/ARCHITECTURE_DIAGRAMS.md`.
+For deeper details: `docs/ARCHITECTURE.md` and `docs/digrams`.
 
 ---
 
@@ -311,6 +311,5 @@ Nice-to-have:
 
 - `docs/CLI.md` — commands and examples
 - `docs/ARCHITECTURE.md` — full deep-dive
-- `docs/ARCHITECTURE_DIAGRAMS.md` — Mermaid diagrams
 - `docs/digrams/` — Excalidraw diagrams
 
