@@ -1,0 +1,10 @@
+{
+  "name": "minibox-ffmpeg-test",
+  "version": "1.0.0",
+  "description": "Test FFmpeg inside Minibox",
+  "main": "test.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {}
+}

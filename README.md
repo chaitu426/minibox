@@ -37,6 +37,11 @@ This repo is **beta** quality: it is usable for testing and learning, but there 
   - `images --json`, `ps --json`
 - **Image portability**
   - `save` / `load` to tar archive
+- **Compose Orchestration**
+  - Multi-container projects via `minibox-compose.yaml`
+  - DAG-based service dependency resolution (`depends_on`)
+  - **Service Discovery** via dynamic `/etc/hosts` management
+  - Automated inline builds and specialized database mode
 - **Maintenance**
   - `system prune`
   - `system prune --build-cache` (clears build cache under `DataRoot/layers`)
@@ -310,6 +315,7 @@ Nice-to-have:
 ## Docs
 
 - `docs/CLI.md` — commands and examples
+- `docs/COMPOSE.md` — multi-container orchestration guide
 - `docs/ARCHITECTURE.md` — full deep-dive
 - `docs/digrams/` — Excalidraw diagrams
 

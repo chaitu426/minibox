@@ -457,17 +457,31 @@ These are good future milestones but do not block current operation.
 
 ---
 
-## 16) Practical “How You Built It” Summary
+## 17) Compose Orchestration
 
-In concise terms, your architecture is:
+Implemented in `cmd/cli/main.go` (orchestrator) and supported by daemon runtime enhancements.
 
-1. **MiniBox compiler** (parser + DAG scheduler) builds deterministic layer graph.
-2. **OCI packager** writes config/manifest/layers as digest-addressed blobs.
-3. **Runtime launcher** resolves image references to rootfs layers and process config.
-4. **Container executor** applies namespace isolation + chroot + hardening, then runs payload under tiny init.
-5. **Network plane** allocates per-container veth/IP and optional host port mapping.
-6. **Control plane** (API + CLI) orchestrates lifecycle and exposes observability.
-7. **State + archive system** makes runs traceable and images portable.
+### 17.1 YAML Parsing and Validation
+- Uses `gopkg.in/yaml.v3` to parse `minibox-compose.yaml`.
+- Schema includes `services`, `build`, `depends_on`, and specialized `db_mode` settings.
 
-That is already a solid “modern minimal container engine” architecture with clear boundaries and extension points.
+### 17.2 Dependency Resolution (DAG)
+- The CLI builds a Directed Acyclic Graph of services.
+- Uses a topological sort to determine the correct startup order based on `depends_on`.
+- Services without dependencies are started in the first batch, followed by their dependents.
+
+### 17.3 Automated Builds
+- If a service defines a `build` context, the CLI triggers `POST /containers/build` before attempting to run it.
+- The resulting image is tagged as `<project>-<service>` for internal use.
+
+### 17.4 Service Discovery
+- **State Tracking**: `ContainerInfo` stores the assigned IP address for every running container.
+- **Hosts Sync**: When a container starts, the daemon fetches all running containers in the same project and generates a hosts file mapping service names and container IDs to their respective IPs.
+- **Injection**: This hosts file is written to `rootfs/etc/hosts` before the container's PID 1 starts, enabling seamless name resolution (e.g., `db` resolves to `172.19.0.x`).
+
+### 17.5 Database Mode (`db_mode`)
+- When enabled, it applies a suite of optimizations:
+    - **Shared Memory**: Sets `/dev/shm` to a performant default (256MB).
+    - **OOM Protection**: Sets `oom_score_adj` to `-900`.
+    - **Named Volumes**: Automatically provisions a persistent volume directory under `DataRoot/volumes/` to ensure data persists across orchestration cycles.
 

@@ -20,6 +20,7 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("GET /ping", handler.PingHandler)
 
 	mux.HandleFunc("POST /containers/run", maxBytes(4<<20, handler.RunContainerHandler))
+	mux.HandleFunc("POST /containers/exec", maxBytes(4<<20, handler.ExecContainerHandler))
 	mux.HandleFunc("POST /containers/build", maxBytes(64<<20, handler.BuildImageHandler))
 
 	mux.HandleFunc("GET /containers", handler.ListContainersHandler)

@@ -1,0 +1,13 @@
+{
+  "name": "mongo-minibox-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Smoke test for minibox MongoDB (same idea as db-test/redis + test-redis.js)",
+  "main": "test-mongo.js",
+  "scripts": {
+    "test": "node test-mongo.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.12.0"
+  }
+}

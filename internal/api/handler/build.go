@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/chaitu426/minibox/internal/builder"
 	"github.com/chaitu426/minibox/internal/config"
@@ -22,9 +23,12 @@ type BuildRequest struct {
 type flushWriter struct {
 	w http.ResponseWriter
 	f http.Flusher
+	m sync.Mutex
 }
 
 func (fw *flushWriter) Write(p []byte) (n int, err error) {
+	fw.m.Lock()
+	defer fw.m.Unlock()
 	n, err = fw.w.Write(p)
 	if fw.f != nil {
 		fw.f.Flush()

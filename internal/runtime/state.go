@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/chaitu426/minibox/internal/config"
@@ -26,6 +27,9 @@ type ContainerInfo struct {
 	CreatedAt time.Time         `json:"created_at"`
 	ExitCode  int               `json:"exit_code"`
 	Ports     map[string]string `json:"ports,omitempty"` // hostPort -> containerPort
+	Name      string            `json:"name,omitempty"`
+	Project   string            `json:"project,omitempty"`
+	IP        string            `json:"ip,omitempty"`
 }
 
 var (
@@ -100,13 +104,46 @@ func GetAllContainers() map[string]ContainerInfo {
 			if err == nil {
 				json.Unmarshal(decrypted, &containers)
 			} else {
-				// Fallback to unencrypted if decryption fails (e.g., transition period)
+				// Fallback to unencrypted
 				json.Unmarshal(data, &containers)
 			}
 		} else {
 			json.Unmarshal(data, &containers)
 		}
 	}
+
+	// Live check for running containers
+	changed := false
+	for id, c := range containers {
+		if c.Status == "running" && c.PID > 0 {
+			// Check if process exists (Signal 0)
+			process, err := os.FindProcess(c.PID)
+			if err != nil {
+				c.Status = "exited"
+				c.ExitCode = -1 // Unknown exit code
+				containers[id] = c
+				changed = true
+				continue
+			}
+
+			err = process.Signal(syscall.Signal(0))
+			if err != nil {
+				c.Status = "exited"
+				c.ExitCode = -1
+				containers[id] = c
+				changed = true
+			}
+		}
+	}
+
+	if changed {
+		// Update state file asynchronously to avoid blocking the caller too much,
+		// but since GetAllContainers is often followed by a write or is in a mutex,
+		// we should be careful. Here we'll just return the updated map.
+		// The next Register/Update call will persist it, or we can persist it now.
+		go saveContainers(containers)
+	}
+
 	return containers
 }
 

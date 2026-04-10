@@ -6,24 +6,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
+	"github.com/chaitu426/minibox/internal/compose"
+	"github.com/chaitu426/minibox/internal/models"
 	"github.com/chaitu426/minibox/internal/utils"
 	"github.com/chaitu426/minibox/internal/version"
 )
 
 func exitf(code int, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	// Avoid double-prefixing if caller already used a bracketed prefix.
 	if strings.HasPrefix(msg, "[") {
 		fmt.Fprintln(os.Stderr, msg)
 	} else {
@@ -32,7 +34,6 @@ func exitf(code int, format string, args ...any) {
 	os.Exit(code)
 }
 
-// apiBase returns the daemon URL (override with MINIBOX_API, e.g. http://127.0.0.1:8080).
 func apiBase() string {
 	if b := os.Getenv("MINIBOX_API"); b != "" {
 		return strings.TrimSuffix(strings.TrimSpace(b), "/")
@@ -59,6 +60,18 @@ func apiGET(path string) (*http.Response, error) {
 		return nil, err
 	}
 	return apiDo(req)
+}
+
+func apiDial() (net.Conn, error) {
+	u, err := url.Parse(apiBase())
+	if err != nil {
+		return nil, err
+	}
+	host := u.Host
+	if !strings.Contains(host, ":") {
+		host += ":80"
+	}
+	return net.Dial("tcp", host)
 }
 
 func apiPOST(path, contentType string, body io.Reader) (*http.Response, error) {
@@ -100,22 +113,27 @@ func ping() {
 }
 
 func readHTTPError(resp *http.Response) string {
-	if resp == nil {
-		return "no response"
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+type interactiveReader struct {
+	jsonPart io.Reader
+	stdin    io.Reader
+}
+
+func (r *interactiveReader) Read(p []byte) (int, error) {
+	n, err := r.jsonPart.Read(p)
+	if err == io.EOF {
+		return r.stdin.Read(p)
 	}
-	b, _ := io.ReadAll(resp.Body)
-	if len(b) == 0 {
-		return resp.Status
-	}
-	return strings.TrimSpace(string(b))
+	return n, err
 }
 
 func printMainHelp() {
 	utils.Banner()
-	fmt.Println("Usage: minibox <command> [args]")
-	fmt.Println()
-	fmt.Println("Core:")
 	fmt.Println("  run, exec, ps, logs, stop, kill, rm, stats")
+	fmt.Println("  compose [up|down|ps]")
 	fmt.Println("Images:")
 	fmt.Println("  build, images, save, load, rmi")
 	fmt.Println("System:")
@@ -126,26 +144,16 @@ func printMainHelp() {
 	fmt.Println("  --version Show CLI version")
 }
 
-func buildCommand() {
-	if len(os.Args) < 4 || os.Args[2] != "-t" {
-		exitf(2, "Usage: minibox build -t <image> <path/to/dir>")
-	}
-	imageName := os.Args[3]
-	dir := "."
-	if len(os.Args) == 5 {
-		dir = os.Args[4]
-	}
-
+func triggerBuild(imageName, dir string) error {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		utils.PrintError("Failed to get absolute path: %v", err)
-		return
+		return fmt.Errorf("failed to get absolute path: %v", err)
 	}
 
 	miniBoxPath := filepath.Join(absDir, "MiniBox")
 	miniBoxInfo, err := os.ReadFile(miniBoxPath)
 	if err != nil {
-		exitf(1, "Failed to read MiniBox file at %s: %v", miniBoxPath, err)
+		return fmt.Errorf("failed to read MiniBox file at %s: %v", miniBoxPath, err)
 	}
 
 	utils.PrintInfo("Building image %s from %s", imageName, filepath.Base(absDir))
@@ -160,36 +168,43 @@ func buildCommand() {
 
 	resp, err := apiPOSTStream("/containers/build", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		exitf(1, "Connection to daemon failed: %v", err)
+		return fmt.Errorf("connection to daemon failed: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "Build failed: %s", readHTTPError(resp))
+		return fmt.Errorf("build failed: %s", readHTTPError(resp))
 	}
 
-	// Stream build logs with better formatting
+	// Stream build logs
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
-		// New builder output is already structured and timed. Prefer faithful rendering.
 		if strings.HasPrefix(line, "[") {
-			// Highlight [prefix] messages.
 			if parts := strings.SplitN(line, "] ", 2); len(parts) == 2 && strings.HasPrefix(parts[0], "[") {
 				fmt.Println(utils.ColorBold + utils.ColorCyan + parts[0] + "]" + utils.ColorReset + " " + parts[1])
 				continue
 			}
-			fmt.Println(line)
-			continue
-		}
-		// Block-prefixed lines from parallel blocks: [block] ...
-		if strings.HasPrefix(line, "[") && strings.Contains(line, "] ") {
-			fmt.Println(line)
-			continue
 		}
 		fmt.Println(line)
 	}
 	if err := scanner.Err(); err != nil {
-		exitf(1, "Build stream error: %v", err)
+		return fmt.Errorf("build stream error: %v", err)
+	}
+	return nil
+}
+
+func buildCommand() {
+	if len(os.Args) < 4 || os.Args[2] != "-t" {
+		exitf(2, "Usage: minibox build -t <image> <path/to/dir>")
+	}
+	imageName := os.Args[3]
+	dir := "."
+	if len(os.Args) == 5 {
+		dir = os.Args[4]
+	}
+
+	if err := triggerBuild(imageName, dir); err != nil {
+		exitf(1, "%v", err)
 	}
 }
 
@@ -214,17 +229,29 @@ func runCommand() {
 	}
 
 	detached := false
+	interactive := false
 	memoryMB := 0
 	cpuMax := 0
 	portMap := map[string]string{}
 	volumeMap := map[string]string{}
 	var userEnv []string
+	user := ""
 	i := 2
 
 	for i < len(os.Args) {
 		switch os.Args[i] {
 		case "-d":
 			detached = true
+			i++
+		case "-it", "-ti":
+			interactive = true
+			detached = false
+			i++
+		case "-i":
+			interactive = true
+			i++
+		case "-t":
+			// TTY part; we handle as part of interactive
 			i++
 		case "-m":
 			i++
@@ -274,6 +301,13 @@ func runCommand() {
 			}
 			userEnv = append(userEnv, os.Args[i])
 			i++
+		case "-u", "--user":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "--user requires a value")
+			}
+			user = os.Args[i]
+			i++
 		default:
 			goto doneFlags
 		}
@@ -291,62 +325,133 @@ doneFlags:
 	}
 
 	reqBody := map[string]interface{}{
-		"image":    image,
-		"command":  cmdArgs,
-		"memory":   memoryMB,
-		"cpu":      cpuMax,
-		"detached": detached,
-		"ports":    portMap,
-		"volumes":  volumeMap,
-		"env":      userEnv,
+		"image":       image,
+		"command":     cmdArgs,
+		"memory":      memoryMB,
+		"cpu":         cpuMax,
+		"detached":    detached,
+		"interactive": interactive,
+		"ports":       portMap,
+		"volumes":     volumeMap,
+		"env":         userEnv,
+		"user":        user,
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
 
 	utils.PrintInfo("Launching container for image %-s", image)
 
-	postFn := apiPOST
-	if !detached {
-		postFn = apiPOSTStream
-	}
-	resp, err := postFn("/containers/run", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		exitf(1, "Failed to start container: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "%s", readHTTPError(resp))
-	}
+	if interactive && !detached {
+		// Set host terminal to raw mode for interaction
+		oldState, err := utils.SetRaw(os.Stdin.Fd())
+		if err == nil {
+			defer utils.Restore(os.Stdin.Fd(), oldState)
+		}
 
-	// Stream output line-by-line for real-time display
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "[network]") {
-			fmt.Println(utils.ColorBlue + line + utils.ColorReset)
-		} else {
-			fmt.Println(line)
+		conn, err := apiDial()
+		if err != nil {
+			exitf(1, "Failed to connect to daemon: %v", err)
+		}
+		defer conn.Close()
+
+		// Send Hijack request
+		fmt.Fprintf(conn, "POST /containers/run HTTP/1.1\r\n")
+		fmt.Fprintf(conn, "Host: %s\r\n", "minibox")
+		fmt.Fprintf(conn, "Content-Type: application/json\r\n")
+		if t := strings.TrimSpace(os.Getenv("MINIBOX_API_TOKEN")); t != "" {
+			fmt.Fprintf(conn, "Authorization: Bearer %s\r\n", t)
+		}
+		fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n", len(jsonData))
+		conn.Write(jsonData)
+
+		// Read response headers
+		br := bufio.NewReader(conn)
+		line, _ := br.ReadString('\n')
+		if !strings.Contains(line, "200") {
+			// Read rest of headers
+			for {
+				l, _ := br.ReadString('\n')
+				if l == "\r\n" || l == "\n" || l == "" {
+					break
+				}
+			}
+			body, _ := io.ReadAll(br)
+			exitf(1, "Failed to start container: %s %s", line, string(body))
+		}
+
+		// Consume rest of headers
+		for {
+			l, _ := br.ReadString('\n')
+			if l == "\r\n" || l == "\n" || l == "" {
+				break
+			}
+		}
+
+		// Now we have raw bi-directional I/O
+		errCh := make(chan error, 2)
+		go func() {
+			_, err := io.Copy(conn, os.Stdin)
+			errCh <- err
+		}()
+		go func() {
+			_, err := io.Copy(os.Stdout, br)
+			errCh <- err
+		}()
+
+		<-errCh
+	} else {
+		postFn := apiPOST
+		if !detached {
+			postFn = apiPOSTStream
+		}
+		resp, err := postFn("/containers/run", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			exitf(1, "Failed to start container: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			exitf(1, "%s", readHTTPError(resp))
+		}
+
+		// Stream output line-by-line for real-time display
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "[network]") {
+				fmt.Println(utils.ColorBlue + line + utils.ColorReset)
+			} else {
+				fmt.Println(line)
+			}
 		}
 	}
 	utils.PrintInfo("Container execution finished.")
 }
 
 func dbCommand() {
-	// Usage:
-	//   minibox db run [--name NAME] [-p host:container] [-e KEY=VAL] [--data /path/in/container] [--cmd "..." ] <image> [command...]
 	if len(os.Args) < 3 {
-		exitf(2, "Usage: minibox db run [--name name] [--data /container/path] [--cmd \"...\"] [-p host:container] [-e KEY=VAL] <image> [command...]")
+		exitf(2, "Usage: minibox db [run|shell] ...")
 	}
-	if os.Args[2] != "run" {
-		exitf(2, "Usage: minibox db run [--name name] [--data /container/path] [--cmd \"...\"] [-p host:container] [-e KEY=VAL] <image> [command...]")
+	switch os.Args[2] {
+	case "run":
+		// handled below
+	case "shell", "console":
+		if len(os.Args) < 4 {
+			exitf(2, "Usage: minibox db shell <containerID>")
+		}
+		dbShell(os.Args[3])
+		return
+	default:
+		exitf(2, "Usage: minibox db [run|shell] ...")
 	}
 
 	detached := true // DB containers should typically run detached.
 	name := ""
 	dataPath := ""
 	cmdStr := ""
+	shmSizeMB := 256 // 256 MB default — enough for Postgres shared_buffers, MongoDB wiredTiger, Redis AOF buffer.
 	portMap := map[string]string{}
 	var userEnv []string
+	user := ""
 
 	i := 3
 	for i < len(os.Args) {
@@ -372,6 +477,17 @@ func dbCommand() {
 			}
 			cmdStr = os.Args[i]
 			i++
+		case "--shm-size":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "--shm-size requires a value in MB")
+			}
+			if v, err := strconv.Atoi(os.Args[i]); err == nil && v > 0 {
+				shmSizeMB = v
+			} else {
+				exitf(2, "--shm-size must be a positive integer (MB)")
+			}
+			i++
 		case "-p":
 			i++
 			if i >= len(os.Args) {
@@ -390,9 +506,21 @@ func dbCommand() {
 			}
 			userEnv = append(userEnv, os.Args[i])
 			i++
+		case "-u", "--user":
+			i++
+			if i >= len(os.Args) {
+				exitf(2, "--user requires a value")
+			}
+			user = os.Args[i]
+			i++
 		case "-d":
 			// accepted for symmetry; db run is detached by default
 			detached = true
+			i++
+		case "-it", "-i", "-t":
+			detached = false
+			i++
+		case "--rm":
 			i++
 		default:
 			goto doneFlags
@@ -432,30 +560,246 @@ doneFlags:
 	// DB-friendly defaults (best effort; can be extended later):
 	// - prefer to survive OOM
 	// - give higher IO weight
+	// - larger /dev/shm for shared_buffers (Postgres) / wiredTiger cache (Mongo)
 	reqBody := map[string]interface{}{
 		"image":         image,
 		"command":       cmdArgs,
 		"detached":      detached,
+		"interactive":   !detached, // db run -it sets detached=false
 		"ports":         portMap,
 		"named_volumes": namedVolumes,
 		"env":           userEnv,
-		"io_weight":     800,
-		"oom_score_adj": -900,
 		"db_mode":       true,
+		"user":          user,
+		"shm_size":      shmSizeMB,
+		"oom_score_adj": -900, // DBs are important
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
-	utils.PrintInfo("Launching database container image=%s volume=%s -> %s", image, name+"-data", dataPath)
 
-	resp, err := apiPOST("/containers/run", "application/json", bytes.NewBuffer(jsonData))
+	modeStr := ""
+	if !detached {
+		modeStr = "interactive "
+	}
+	utils.PrintInfo("Launching %sdatabase container image=%s volume=%s -> %s", modeStr, image, name+"-data", dataPath)
+
+	if !detached {
+		// Set host terminal to raw mode for interaction
+		oldState, err := utils.SetRaw(os.Stdin.Fd())
+		if err == nil {
+			defer utils.Restore(os.Stdin.Fd(), oldState)
+		}
+
+		conn, err := apiDial()
+		if err != nil {
+			exitf(1, "Failed to connect to daemon: %v", err)
+		}
+		defer conn.Close()
+
+		// Send Hijack request
+		fmt.Fprintf(conn, "POST /containers/run HTTP/1.1\r\n")
+		fmt.Fprintf(conn, "Host: %s\r\n", "minibox")
+		fmt.Fprintf(conn, "Content-Type: application/json\r\n")
+		if t := strings.TrimSpace(os.Getenv("MINIBOX_API_TOKEN")); t != "" {
+			fmt.Fprintf(conn, "Authorization: Bearer %s\r\n", t)
+		}
+		fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n", len(jsonData))
+		conn.Write(jsonData)
+
+		// Read response headers
+		br := bufio.NewReader(conn)
+		line, _ := br.ReadString('\n')
+		if !strings.Contains(line, "200") {
+			// Read rest of headers
+			for {
+				l, _ := br.ReadString('\n')
+				if l == "\r\n" || l == "\n" || l == "" {
+					break
+				}
+			}
+			body, _ := io.ReadAll(br)
+			exitf(1, "Failed to start container: %s %s", line, string(body))
+		}
+
+		// Consume rest of headers
+		for {
+			l, _ := br.ReadString('\n')
+			if l == "\r\n" || l == "\n" || l == "" {
+				break
+			}
+		}
+
+		// Now we have raw bi-directional I/O
+		errCh := make(chan error, 2)
+		go func() {
+			_, err := io.Copy(conn, os.Stdin)
+			errCh <- err
+		}()
+		go func() {
+			_, err := io.Copy(os.Stdout, br) // Note: use br to get any data already read into buffer
+			errCh <- err
+		}()
+
+		<-errCh
+	} else {
+		resp, err := apiPOST("/containers/run", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			exitf(1, "Failed to start db container: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			exitf(1, "%s", readHTTPError(resp))
+		}
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("Container started (detached): %s\n", string(body))
+	}
+}
+
+// readProcEnvVar reads a single environment variable from a running process
+// via /proc/<pid>/environ. This works across namespaces since procfs is host-mounted.
+func readProcEnvVar(pid int, key string) string {
+	if pid <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 	if err != nil {
-		exitf(1, "Failed to start db container: %v", err)
+		return ""
+	}
+	prefix := key + "="
+	for _, entry := range bytes.Split(data, []byte{'\x00'}) {
+		if strings.HasPrefix(string(entry), prefix) {
+			return string(entry[len(prefix):])
+		}
+	}
+	return ""
+}
+
+func dbShell(id string) {
+	// 1. Resolve image to determine CLI type
+	resp, err := apiGET("/containers")
+	if err != nil {
+		exitf(1, "Failed to connect to daemon: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "%s", readHTTPError(resp))
+	var containers map[string]map[string]any
+	json.NewDecoder(resp.Body).Decode(&containers)
+	c, ok := containers[id]
+	if !ok {
+		exitf(1, "Container not found: %s", id)
 	}
-	io.Copy(os.Stdout, resp.Body)
+	image, _ := c["image"].(string)
+
+	// Extract the container process PID so we can read its environment.
+	pid := 0
+	if pidF, ok := c["pid"].(float64); ok {
+		pid = int(pidF)
+	}
+
+	var shellCmd []string
+	if strings.Contains(image, "redis") {
+		// Try PATH first, then usual absolute paths (some minimal images omit redis-cli).
+		shellCmd = []string{"/bin/sh", "-c",
+			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; " +
+				"command -v redis-cli >/dev/null 2>&1 && exec redis-cli; " +
+				"[ -x /usr/local/bin/redis-cli ] && exec /usr/local/bin/redis-cli; " +
+				"[ -x /usr/bin/redis-cli ] && exec /usr/bin/redis-cli; " +
+				"echo 'redis-cli not found in container (image may be server-only). On the host: redis-cli -h 127.0.0.1 -p <port>' >&2; exit 127"}
+	} else if strings.Contains(image, "postgres") {
+		shellCmd = []string{"/bin/sh", "-c", "psql -U postgres"}
+	} else if strings.Contains(image, "mongo") {
+		// Read credentials from the running mongod process environment (accessible
+		// via /proc/<pid>/environ even across namespaces).
+		mongoUser := readProcEnvVar(pid, "MONGO_INITDB_ROOT_USERNAME")
+		mongoPass := readProcEnvVar(pid, "MONGO_INITDB_ROOT_PASSWORD")
+
+		// Robustly locate mongosh (MongoDB 7 puts it in /usr/bin; older builds use /usr/local/bin).
+		const findMongosh = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; " +
+			"MONGOSH=$(command -v mongosh 2>/dev/null); " +
+			"[ -z \"$MONGOSH\" ] && for p in /usr/bin/mongosh /usr/local/bin/mongosh /opt/mongosh/bin/mongosh; do [ -x \"$p\" ] && MONGOSH=\"$p\" && break; done; " +
+			"[ -z \"$MONGOSH\" ] && { echo \"mongosh not found in container\" >&2; exec /bin/sh; }"
+
+		var mongoshArgs string
+		if mongoUser != "" {
+			mongoshArgs = fmt.Sprintf(" --username %q --password %q --authenticationDatabase admin", mongoUser, mongoPass)
+		}
+		shellCmd = []string{"/bin/sh", "-c", findMongosh + "; exec \"$MONGOSH\"" + mongoshArgs}
+	} else if strings.Contains(image, "mysql") || strings.Contains(image, "mariadb") {
+		shellCmd = []string{"/bin/sh", "-c", "mysql -uroot"}
+	} else {
+		shellCmd = []string{"/bin/sh"}
+	}
+
+	utils.PrintInfo("Opening database console for %s...", id)
+	execWithArgs(id, shellCmd, true)
+}
+
+func execWithArgs(id string, cmdArgs []string, interactive bool) {
+	reqBody := map[string]any{
+		"id":          id,
+		"command":     cmdArgs,
+		"interactive": interactive,
+	}
+	jsonData, _ := json.Marshal(reqBody)
+
+	if interactive {
+		oldState, err := utils.SetRaw(os.Stdin.Fd())
+		if err == nil {
+			defer utils.Restore(os.Stdin.Fd(), oldState)
+		}
+
+		conn, err := apiDial()
+		if err != nil {
+			exitf(1, "Failed to connect to daemon: %v", err)
+		}
+		defer conn.Close()
+
+		fmt.Fprintf(conn, "POST /containers/exec HTTP/1.1\r\n")
+		fmt.Fprintf(conn, "Host: %s\r\n", "minibox")
+		fmt.Fprintf(conn, "Content-Type: application/json\r\n")
+		if t := strings.TrimSpace(os.Getenv("MINIBOX_API_TOKEN")); t != "" {
+			fmt.Fprintf(conn, "Authorization: Bearer %s\r\n", t)
+		}
+		fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n", len(jsonData))
+		conn.Write(jsonData)
+
+		br := bufio.NewReader(conn)
+		line, _ := br.ReadString('\n')
+		if !strings.Contains(line, "200") {
+			for {
+				l, _ := br.ReadString('\n')
+				if l == "\r\n" || l == "\n" || l == "" {
+					break
+				}
+			}
+			body, _ := io.ReadAll(br)
+			exitf(1, "Exec failed: %s %s", line, string(body))
+		}
+
+		for {
+			l, _ := br.ReadString('\n')
+			if l == "\r\n" || l == "\n" || l == "" {
+				break
+			}
+		}
+
+		errCh := make(chan error, 2)
+		go func() {
+			_, err := io.Copy(conn, os.Stdin)
+			errCh <- err
+		}()
+		go func() {
+			_, err := io.Copy(os.Stdout, br)
+			errCh <- err
+		}()
+		<-errCh
+	} else {
+		resp, err := apiPOST("/containers/exec", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			exitf(1, "Exec failed: %v", err)
+		}
+		defer resp.Body.Close()
+		io.Copy(os.Stdout, resp.Body)
+	}
 }
 
 func psCommand() {
@@ -937,7 +1281,7 @@ func systemCommand() {
 }
 
 func execCommand() {
-	if len(os.Args) < 4 {
+	if len(os.Args) < 3 {
 		exitf(2, "Usage: minibox exec [-it] <containerID> <cmd...>")
 	}
 
@@ -947,58 +1291,307 @@ func execCommand() {
 		interactive = true
 		i++
 	}
-	if len(os.Args) <= i+1 {
+	if len(os.Args) <= i {
 		exitf(2, "Usage: minibox exec [-it] <containerID> <cmd...>")
 	}
 	id := os.Args[i]
 	cmdArgs := os.Args[i+1:]
 
-	// Resolve PID from daemon state
+	if len(cmdArgs) == 0 {
+		cmdArgs = []string{"/bin/sh"}
+	}
+
+	execWithArgs(id, cmdArgs, interactive)
+}
+
+func composeCommand() {
+	if len(os.Args) < 3 {
+		exitf(2, "Usage: minibox compose [up|down|ps|logs|build|start|stop|restart] [-f file]")
+	}
+
+	action := os.Args[2]
+	filename := "minibox-compose.yaml"
+	for i := 3; i < len(os.Args); i++ {
+		if os.Args[i] == "-f" && i+1 < len(os.Args) {
+			filename = os.Args[i+1]
+			break
+		}
+	}
+
+	conf, err := compose.ParseConfig(filename)
+	if err != nil {
+		exitf(1, "Failed to parse compose file: %v", err)
+	}
+
+	projectName := conf.Name
+	if projectName == "" {
+		abs, _ := filepath.Abs(".")
+		projectName = filepath.Base(abs)
+	}
+
+	switch action {
+	case "up":
+		composeUp(conf, projectName, filename)
+	case "down":
+		composeDown(projectName)
+	case "ps":
+		composePs(projectName)
+	case "logs":
+		composeLogs(projectName)
+	case "build":
+		composeBuild(conf, projectName, filename)
+	case "start":
+		composeUp(conf, projectName, filename) // For now start and up are similar
+	case "stop":
+		composeLifecycleAction(projectName, "stop")
+	case "restart":
+		composeRestart(conf, projectName, filename)
+	default:
+		exitf(2, "Unknown compose action: %s", action)
+	}
+}
+
+func getProjectContainers(projectName string) map[string]map[string]any {
 	resp, err := apiGET("/containers")
 	if err != nil {
-		exitf(1, "connection to daemon failed: %v", err)
+		exitf(1, "Failed to list containers: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		exitf(1, "%s", readHTTPError(resp))
-	}
+	var all map[string]map[string]any
+	json.NewDecoder(resp.Body).Decode(&all)
 
-	var containers map[string]map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
-		exitf(1, "Failed to parse daemon response: %v", err)
+	projectContainers := make(map[string]map[string]any)
+	for id, c := range all {
+		if proj, ok := c["project"].(string); ok && proj == projectName {
+			projectContainers[id] = c
+		}
 	}
-	c, ok := containers[id]
-	if !ok {
-		exitf(1, "Container not found: %s", id)
-	}
-	pidF, ok := c["pid"].(float64)
-	if !ok || pidF <= 0 {
-		exitf(1, "Container PID not available for %s", id)
-	}
-	pid := fmt.Sprintf("%.0f", pidF)
+	return projectContainers
+}
 
-	// Use nsenter for reliable namespace entry + TTY behavior.
-	// This runs locally on the same host as the daemon.
-	nsenterPath, err := exec.LookPath("nsenter")
+func composeUp(conf *models.ComposeConfig, projectName, filename string) {
+	sorted, err := compose.SortServices(conf)
 	if err != nil {
-		exitf(1, "nsenter not found (install util-linux). Cannot exec into container namespaces.")
+		exitf(1, "Dependency sort failed: %v", err)
 	}
 
-	args := []string{"-t", pid, "-m", "-u", "-n", "-i", "-p", "--"}
-	args = append(args, cmdArgs...)
-	cmd := exec.Command(nsenterPath, args...)
-	if interactive {
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	} else {
-		// Non-interactive: still print output.
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+	for _, name := range sorted {
+		svc := conf.Services[name]
+		utils.PrintInfo("Preparing service: %s", name)
+
+		imageName := svc.Image
+		if svc.Build != "" {
+			if imageName == "" {
+				imageName = fmt.Sprintf("%s-%s", projectName, name)
+			}
+			buildDir := svc.Build
+			if !filepath.IsAbs(buildDir) {
+				composeDir := filepath.Dir(filename)
+				buildDir = filepath.Join(composeDir, buildDir)
+			}
+			utils.PrintInfo("Building image for %s...", name)
+			if err := triggerBuild(imageName, buildDir); err != nil {
+				exitf(1, "Build failed for service %s: %v", name, err)
+			}
+		}
+
+		if imageName == "" {
+			exitf(1, "Service %s has no image or build context", name)
+		}
+
+		portMap := map[string]string{}
+		for _, p := range svc.Ports {
+			parts := strings.SplitN(p, ":", 2)
+			if len(parts) == 2 {
+				portMap[parts[0]] = parts[1]
+			}
+		}
+
+		volumeMap := map[string]string{}
+		for _, v := range svc.Volumes {
+			parts := strings.SplitN(v, ":", 2)
+			if len(parts) == 2 {
+				absHost, _ := filepath.Abs(parts[0])
+				volumeMap[absHost] = parts[1]
+			}
+		}
+
+		namedVolumes := map[string]string{}
+		if svc.DataPath != "" {
+			vname := fmt.Sprintf("%s-%s-data", projectName, name)
+			namedVolumes[vname] = svc.DataPath
+		}
+
+		shmSize := svc.ShmSize
+		oomScore := svc.OOMScoreAdj
+		if svc.DBMode {
+			if shmSize == 0 { shmSize = 256 }
+			if oomScore == 0 { oomScore = -900 }
+		}
+
+		reqBody := map[string]any{
+			"image":         imageName,
+			"command":       svc.Command,
+			"env":           svc.Environment,
+			"ports":         portMap,
+			"volumes":       volumeMap,
+			"named_volumes": namedVolumes,
+			"name":          name,
+			"project":       projectName,
+			"detached":      true,
+			"db_mode":       svc.DBMode,
+			"shm_size":      shmSize,
+			"user":          svc.User,
+			"oom_score_adj": oomScore,
+		}
+
+		jsonData, _ := json.Marshal(reqBody)
+		resp, err := apiPOST("/containers/run", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			exitf(1, "Request failed for service %s: %v", name, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			exitf(1, "Service %s failed to start: %s", name, readHTTPError(resp))
+		}
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("Service %s started: %s\n", name, string(body))
 	}
-	if err := cmd.Run(); err != nil {
-		exitf(1, "exec failed: %v", err)
+	utils.PrintInfo("Project %s is up.", projectName)
+}
+
+func composeDown(projectName string) {
+	containers := getProjectContainers(projectName)
+	if len(containers) == 0 {
+		utils.PrintInfo("No services found for project: %s", projectName)
+		return
 	}
+
+	for id := range containers {
+		utils.PrintInfo("Stopping container %s...", id)
+		apiPOST("/containers/stop?id="+id, "application/json", nil)
+
+		utils.PrintInfo("Removing container %s...", id)
+		apiPOST("/containers/remove?id="+id, "application/json", nil)
+	}
+	utils.PrintInfo("Project %s down.", projectName)
+}
+
+func composePs(projectName string) {
+	containers := getProjectContainers(projectName)
+	
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, utils.ColorBold+"SERVICE\tCONTAINER ID\tIMAGE\tSTATUS\tPORTS"+utils.ColorReset)
+	
+	for id, c := range containers {
+		name, _ := c["name"].(string)
+		img, _ := c["image"].(string)
+		status, _ := c["status"].(string)
+		
+		ports := "-"
+		if pm, ok := c["ports"].(map[string]any); ok && len(pm) > 0 {
+			var pairs []string
+			for hp, cp := range pm {
+				pairs = append(pairs, fmt.Sprintf("0.0.0.0:%s->%s/tcp", hp, cp))
+			}
+			ports = strings.Join(pairs, ",")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, id, img, status, ports)
+	}
+	w.Flush()
+	if len(containers) == 0 {
+		fmt.Printf("No services found for project: %s\n", projectName)
+	}
+}
+
+func composeLogs(projectName string) {
+	containers := getProjectContainers(projectName)
+	if len(containers) == 0 {
+		exitf(1, "No services found for project: %s", projectName)
+	}
+
+	var wg sync.WaitGroup
+	colors := []string{utils.ColorCyan, utils.ColorYellow, utils.ColorGreen, utils.ColorPurple, utils.ColorBlue, utils.ColorRed}
+	
+	idx := 0
+	for id, c := range containers {
+		name, _ := c["name"].(string)
+		color := colors[idx % len(colors)]
+		idx++
+
+		wg.Add(1)
+		go func(cid, cname, col string) {
+			defer wg.Done()
+			resp, err := apiGET("/containers/logs?id=" + url.QueryEscape(cid) + "&follow=1")
+			if err != nil {
+				fmt.Printf("[%s] Error fetching logs: %v\n", cname, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			reader := bufio.NewReader(resp.Body)
+			for {
+				line, err := reader.ReadString('\n')
+				if line != "" {
+					fmt.Printf("%s%s |%s %s", col, cname, utils.ColorReset, line)
+				}
+				if err != nil {
+					break
+				}
+			}
+		}(id, name, color)
+	}
+	wg.Wait()
+}
+
+func composeBuild(conf *models.ComposeConfig, projectName, filename string) {
+	for name, svc := range conf.Services {
+		if svc.Build == "" {
+			continue
+		}
+		imageName := svc.Image
+		if imageName == "" {
+			imageName = fmt.Sprintf("%s-%s", projectName, name)
+		}
+		buildDir := svc.Build
+		if !filepath.IsAbs(buildDir) {
+			composeDir := filepath.Dir(filename)
+			buildDir = filepath.Join(composeDir, buildDir)
+		}
+		utils.PrintInfo("Building service: %s", name)
+		if err := triggerBuild(imageName, buildDir); err != nil {
+			exitf(1, "Build failed for service %s: %v", name, err)
+		}
+	}
+}
+
+func composeLifecycleAction(projectName string, action string) {
+	containers := getProjectContainers(projectName)
+	if len(containers) == 0 {
+		exitf(1, "No services found for project: %s", projectName)
+	}
+
+	for id, c := range containers {
+		name, _ := c["name"].(string)
+		utils.PrintInfo("%s service: %s (%s)", strings.Title(action), name, id)
+		
+		switch action {
+		case "stop":
+			apiPOST("/containers/stop?id="+url.QueryEscape(id), "application/json", nil)
+		case "restart":
+			// Stop then re-run
+			apiPOST("/containers/stop?id="+url.QueryEscape(id), "application/json", nil)
+			apiPOST("/containers/remove?id="+url.QueryEscape(id), "application/json", nil)
+			// Wait, to re-run we need the compose config. 
+			// composeRestart handles this better by calling composeUp with a filter.
+		}
+	}
+}
+
+func composeRestart(conf *models.ComposeConfig, projectName, filename string) {
+	// For each service in the project, stop it if it exists, then up it.
+	composeDown(projectName)
+	composeUp(conf, projectName, filename)
 }
 
 func main() {
@@ -1034,6 +1627,8 @@ func main() {
 		logsCommand()
 	case "exec":
 		execCommand()
+	case "compose":
+		composeCommand()
 
 	case "images":
 		imagesCommand()

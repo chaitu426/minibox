@@ -101,6 +101,7 @@ miniboxd --version
 | `kill` | Force-kill a running container |
 | `rm` | Remove a container |
 | `rmi` | Remove an image |
+| `compose` | Multi-container orchestration (up/down/ps) |
 | `system prune` | Garbage-collect unused blobs and lazy mounts |
 
 ---
@@ -178,6 +179,68 @@ Run a command in a new container.
 ```
 
 If you omit `command`, the image’s default `CMD` from metadata is used (when available).
+
+---
+
+### `db run`
+
+Run a **database container** with production-friendly defaults: detached, named persistent volume, larger `/dev/shm`, high IO priority, OOM-protected.
+
+**Usage:**
+```
+minibox db run [flags] <image> [command...]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name <name>` | derived from image | Named volume ID. Stored in `DataRoot/volumes/<name>-data`. |
+| `--data <path>` | `/var/lib/minibox-data` | Container path where the volume is mounted |
+| `--shm-size <MB>` | `256` | `/dev/shm` size in MB (Postgres needs ≥128, Mongo benefits from ≥256) |
+| `-p <host:container>` | — | Port map; repeat for multiple |
+| `-e KEY=VAL` | — | Environment variable; repeat for multiple |
+| `--cmd <string>` | — | Shell command string (`/bin/sh -c <cmd>`) when no positional args |
+| `-d` | implicit | Always detached; accepted for symmetry |
+
+**What `db run` does differently from `run`:**
+- `db_mode=true` — skips capability drop so the DB entrypoint can `chown` data dirs on first boot
+- `/dev/shm` mounted at `--shm-size` MB (Postgres `shared_buffers`, MongoDB wiredTiger)
+- `/dev/pts` devpts mounted — required by `initdb` and DB shell tools
+- `/tmp` mounted as `tmpfs` (mode 1777) — used broadly by all DB engines
+- `/dev/ptmx`, `/dev/console`, fd symlinks created for full POSIX device coverage
+- `io_weight=800` — high disk scheduling priority
+- `oom_score_adj=-900` — last process to be OOM-killed
+
+**Examples:**
+
+```bash
+# Postgres 15
+minibox build -t minibox-postgres ./db-test/postgres
+minibox db run \
+  --name pg-data --data /var/lib/postgresql/data \
+  --shm-size 256 -p 5432:5432 \
+  -e POSTGRES_PASSWORD=secret -e POSTGRES_USER=app -e POSTGRES_DB=mydb \
+  minibox-postgres
+# Connect: psql -h 127.0.0.1 -p 5432 -U app -d mydb
+
+# MongoDB 7
+minibox build -t minibox-mongo ./db-test/mongo
+minibox db run \
+  --name mongo-data --data /data/db \
+  -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=secret \
+  minibox-mongo
+# Connect: mongosh mongodb://root:secret@127.0.0.1:27017
+
+# Redis 7
+minibox build -t minibox-redis ./db-test/redis
+minibox db run \
+  --name redis-data --data /data \
+  --shm-size 64 -p 6379:6379 \
+  minibox-redis
+# Connect: redis-cli -h 127.0.0.1 -p 6379 ping
+```
+
+Ready-to-run helper scripts: `db-test/postgres/run.sh`, `db-test/mongo/run.sh`, `db-test/redis/run.sh`.
 
 ---
 
@@ -330,6 +393,36 @@ Remove orphaned blobs, teardown stale lazy FUSE mounts, clean extracted layers, 
 ```bash
 ./bin/minibox system prune
 ```
+
+---
+
+### `compose`
+
+Manage multi-container projects using a `minibox-compose.yaml` file.
+
+**Usage:** `minibox compose [up|down|ps] [-f <file>]`
+
+| Subcommand | Description |
+|------------|-------------|
+| `up` | Builds images and starts all services in the project. |
+| `ps` | Lists running services associated with the project. |
+| `logs` | Streams multiplexed logs for all services in the project. |
+| `build` | Builds service images without starting containers. |
+| `start` | Starts services in the project. |
+| `stop` | Stops services in the project. |
+| `restart` | Restarts services in the project. |
+| `down` | Stops and removes all containers in the project. |
+
+**Example:**
+```bash
+# Start current project
+minibox compose up
+
+# Stop and cleanup
+minibox compose down
+```
+
+For a full guide on the Compose YAML schema and features, see `docs/COMPOSE.md`.
 
 ---
 

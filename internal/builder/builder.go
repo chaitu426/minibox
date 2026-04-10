@@ -240,6 +240,27 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 
 	// Create Config Blob
 	labels := map[string]string{}
+	var cmd, entrypoint []string
+	var user string
+	workingDir := cfile.Workdir
+
+	baseConfig, _ := containerRuntime.ResolveImageConfig(cfile.BaseImage)
+	if baseConfig != nil {
+		cmd = baseConfig.Config.Cmd
+		entrypoint = baseConfig.Config.Entrypoint
+		user = baseConfig.Config.User
+		if workingDir == "" || workingDir == "/" {
+			workingDir = baseConfig.Config.WorkingDir
+		}
+		for k, v := range baseConfig.Config.Labels {
+			labels[k] = v
+		}
+	}
+
+	if len(cfile.Cmd) > 0 {
+		cmd = cfile.Cmd
+	}
+
 	if len(cfile.HealthcheckCmd) > 0 {
 		labels["mini.healthcheck.cmd"] = strings.Join(cfile.HealthcheckCmd, "\x1f")
 		iv := cfile.HealthcheckIntervalSec
@@ -256,9 +277,11 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 			DiffIDs: diffIDs,
 		},
 		Config: models.ContainerConfig{
-			Cmd:        cfile.Cmd,
+			Cmd:        cmd,
+			Entrypoint: entrypoint,
+			User:       user,
 			Env:        utils.MapToEnvSlice(cfile.Env),
-			WorkingDir: cfile.Workdir,
+			WorkingDir: workingDir,
 			Labels:     labels,
 		},
 	}

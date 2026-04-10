@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -35,6 +36,92 @@ var ipCounter uint32 = 1
 func AllocateIP() string {
 	n := atomic.AddUint32(&ipCounter, 1)
 	return fmt.Sprintf("%s.%d", Subnet, n)
+}
+
+// miniboxBridgeDNATPrefix matches DNAT targets on the minibox bridge (e.g. 172.19.0.2:6379).
+var miniboxBridgeDNATPrefix = Subnet + "."
+
+// removeStaleMiniboxNATForHostPort deletes older minibox DNAT rules for the same host TCP port.
+// Without this, AppendUnique stacks multiple --to-destination values; the first iptables match wins
+// and localhost port maps break (e.g. 127.0.0.1:6379 sent to a stale container IP).
+func removeStaleMiniboxNATForHostPort(ipt *iptables.IPTables, hostPort string) {
+	for _, chain := range []string{"PREROUTING", "OUTPUT"} {
+		for {
+			rules, err := ipt.List("nat", chain)
+			if err != nil {
+				fmt.Printf("[warn] list nat/%s for port cleanup: %v\n", chain, err)
+				break
+			}
+			removed := false
+			prefix := "-A " + chain + " "
+			for _, line := range rules {
+				if !strings.HasPrefix(line, prefix) {
+					continue
+				}
+				if chain == "OUTPUT" && !ruleHasOutInterfaceLo(line) {
+					continue
+				}
+				if !ruleIsMiniboxTCPDNATToBridge(line, hostPort) {
+					continue
+				}
+				spec := strings.Fields(strings.TrimPrefix(line, prefix))
+				if err := ipt.Delete("nat", chain, spec...); err != nil {
+					fmt.Printf("[warn] delete stale nat/%s dnat port=%s: %v\n", chain, hostPort, err)
+				}
+				removed = true
+				break
+			}
+			if !removed {
+				break
+			}
+		}
+	}
+}
+
+func ruleHasOutInterfaceLo(line string) bool {
+	fields := strings.Fields(line)
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "-o" && fields[i+1] == "lo" {
+			return true
+		}
+	}
+	return false
+}
+
+func ruleIsMiniboxTCPDNATToBridge(line, hostPort string) bool {
+	if !strings.Contains(line, "-j") || !strings.Contains(line, "DNAT") {
+		return false
+	}
+	fields := strings.Fields(line)
+	tcp := false
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "-p" && fields[i+1] == "tcp" {
+			tcp = true
+			break
+		}
+	}
+	if !tcp {
+		return false
+	}
+	portOK := false
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "--dport" && fields[i+1] == hostPort {
+			portOK = true
+			break
+		}
+	}
+	if !portOK {
+		return false
+	}
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "--to-destination" {
+			dest := fields[i+1]
+			if strings.HasPrefix(dest, miniboxBridgeDNATPrefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // SetupBridge creates the minibox0 bridge and enables NAT.
@@ -190,6 +277,7 @@ func SetupContainerNetwork(pid int, containerID string, ip string, portMap map[s
 	ipt, _ := iptables.New()
 	var proxies []io.Closer
 	for hostPort, containerPort := range portMap {
+		removeStaleMiniboxNATForHostPort(ipt, hostPort)
 		dest := ip + ":" + containerPort
 		// PREROUTING (External)
 		_ = ipt.AppendUnique("nat", "PREROUTING", "-p", "tcp", "--dport", hostPort, "-j", "DNAT", "--to-destination", dest)

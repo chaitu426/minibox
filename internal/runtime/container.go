@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -102,7 +103,11 @@ func RunContainer() {
 	pidStr := strconv.Itoa(os.Getpid())
 	os.WriteFile(filepath.Join(cgPath, "cgroup.procs"), []byte(pidStr), 0700)
 
-	syscall.Sethostname([]byte(containerID))
+	hostname := containerID
+	if opts.Hostname != "" {
+		hostname = opts.Hostname
+	}
+	syscall.Sethostname([]byte(hostname))
 
 	setOOMScoreAdj(opts.OOMScoreAdj)
 
@@ -151,20 +156,42 @@ func RunContainer() {
 	}
 
 	os.MkdirAll("/dev", 0755)
-	devFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV)
+	devFlags := uintptr(unix.MS_NOSUID)
 	if err := unix.Mount("tmpfs", "/dev", "tmpfs", devFlags, ""); err != nil {
 		fmt.Printf("[warn] mount /dev tmpfs: %v\n", err)
 	}
 
+	// /dev/shm — shared memory required by Postgres (shared_buffers) and other DBs.
+	// Default to 256 MB; opts.ShmSize (in MB) overrides when set.
+	shmSizeMB := 256
+	if opts.ShmSize > 0 {
+		shmSizeMB = opts.ShmSize
+	}
 	os.MkdirAll("/dev/shm", 01777)
 	shmFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME)
-	if err := unix.Mount("tmpfs", "/dev/shm", "tmpfs", shmFlags, "mode=1777,size=65536k"); err != nil {
+	shmOpts := fmt.Sprintf("mode=1777,size=%dm", shmSizeMB)
+	if err := unix.Mount("tmpfs", "/dev/shm", "tmpfs", shmFlags, shmOpts); err != nil {
 		fmt.Printf("[warn] mount /dev/shm: %v\n", err)
 	}
 	os.Chmod("/dev/shm", 01777)
 
-	// Create real device nodes. Many programs (including postgres initdb) rely on /dev/null
-	// being a character device, not a regular file.
+	// /dev/pts — pseudo-terminal slave devices; required by Postgres initdb and many DB tools.
+	os.MkdirAll("/dev/pts", 0755)
+	ptsFlags := uintptr(unix.MS_NOSUID | unix.MS_NOEXEC)
+	if err := unix.Mount("devpts", "/dev/pts", "devpts", ptsFlags, "newinstance,ptmxmode=0666,mode=620"); err != nil {
+		fmt.Printf("[warn] mount /dev/pts: %v\n", err)
+	}
+
+	// /tmp — general-purpose temp dir used widely by Postgres, MongoDB, and Redis.
+	os.MkdirAll("/tmp", 01777)
+	tmpFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME)
+	if err := unix.Mount("tmpfs", "/tmp", "tmpfs", tmpFlags, "mode=1777"); err != nil {
+		fmt.Printf("[warn] mount /tmp: %v\n", err)
+	}
+	os.Chmod("/tmp", 01777)
+
+	// Create real device nodes. Many programs (including postgres initdb, mongod, redis) rely on
+	// /dev/null being a real character device, not a regular file.
 	type devNode struct {
 		name  string
 		major uint32
@@ -178,6 +205,8 @@ func RunContainer() {
 		{"urandom", 1, 9, 0666},
 		{"full", 1, 7, 0666},
 		{"tty", 5, 0, 0666},
+		{"console", 5, 1, 0600}, // console device used by some init scripts
+		{"ptmx", 5, 2, 0666},    // PTY master — needed by Postgres / OpenSSH inside container
 	}
 	for _, n := range nodes {
 		p := filepath.Join("/dev", n.name)
@@ -187,7 +216,32 @@ func RunContainer() {
 		dev := int(unix.Mkdev(n.major, n.minor))
 		if err := unix.Mknod(p, unix.S_IFCHR|n.mode, dev); err != nil {
 			// Best-effort; older kernels/userns may deny mknod.
-			fmt.Printf("[warn] create /dev/%s: %v\n", n.name, err)
+			// Fallback to bind-mounting from host.
+			hostPath := filepath.Join("/dev", n.name)
+			if f, createErr := os.Create(p); createErr == nil {
+				f.Close()
+				if bindErr := unix.Mount(hostPath, p, "", unix.MS_BIND, ""); bindErr != nil {
+					fmt.Printf("[warn] create /dev/%s - mknod failed: %v, bind mount failed: %v\n", n.name, err, bindErr)
+				}
+			} else {
+				fmt.Printf("[warn] create /dev/%s: %v\n", n.name, err)
+			}
+		} else {
+			// Enforce permissions, ignoring host umask.
+			os.Chmod(p, os.FileMode(n.mode))
+		}
+	}
+
+	// /dev/stdin, /dev/stdout, /dev/stderr — symlinks expected by many scripts
+	for _, link := range []struct{ name, target string }{
+		{"stdin", "/proc/self/fd/0"},
+		{"stdout", "/proc/self/fd/1"},
+		{"stderr", "/proc/self/fd/2"},
+		{"fd", "/proc/self/fd"},
+	} {
+		p := filepath.Join("/dev", link.name)
+		if _, err := os.Lstat(p); os.IsNotExist(err) {
+			_ = os.Symlink(link.target, p)
 		}
 	}
 
@@ -249,7 +303,79 @@ func RunContainer() {
 
 	applySysctls(opts.Sysctls)
 
-	os.Exit(runInitCmd(cmdArgs, env))
+	// Resolve the user to run as. If not specified by CLI, use the image default.
+	userStr := opts.User
+	if userStr == "" {
+		userStr = imgConfig.Config.User
+	}
+	uid, gid, _ := resolveUser(userStr)
+
+	os.Exit(runInitCmd(cmdArgs, env, uid, gid))
+}
+
+// resolveUser parses /etc/passwd and /etc/group to find UID/GID for a given user string (user[:group]).
+func resolveUser(userStr string) (uid, gid int, err error) {
+	if userStr == "" {
+		return 0, 0, nil // Default to root
+	}
+
+	parts := strings.SplitN(userStr, ":", 2)
+	userName := parts[0]
+	groupName := ""
+	if len(parts) > 1 {
+		groupName = parts[1]
+	}
+
+	// Try numeric first
+	if u, err := strconv.Atoi(userName); err == nil {
+		uid = u
+		gid = u // Default GID to UID if not specified
+		if groupName != "" {
+			if g, err := strconv.Atoi(groupName); err == nil {
+				gid = g
+			}
+		}
+		return uid, gid, nil
+	}
+
+	// Parse /etc/passwd
+	f, err := os.Open("/etc/passwd")
+	if err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			cols := strings.Split(line, ":")
+			if len(cols) >= 3 && cols[0] == userName {
+				uid, _ = strconv.Atoi(cols[2])
+				gid, _ = strconv.Atoi(cols[3])
+				break
+			}
+		}
+	}
+
+	// If group specified by name, parse /etc/group
+	if groupName != "" {
+		if g, err := strconv.Atoi(groupName); err == nil {
+			gid = g
+		} else {
+			f, err := os.Open("/etc/group")
+			if err == nil {
+				defer f.Close()
+				scanner := bufio.NewScanner(f)
+				for scanner.Scan() {
+					line := scanner.Text()
+					cols := strings.Split(line, ":")
+					if len(cols) >= 3 && cols[0] == groupName {
+						gid, _ = strconv.Atoi(cols[2])
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return uid, gid, nil
 }
 
 func setOOMScoreAdj(adj int) {

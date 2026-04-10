@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +32,24 @@ var (
 	cacheMu     sync.RWMutex
 )
 
+// containerExecEnv is the daemon environment with a single container-oriented PATH.
+// Avoid duplicate PATH keys from appending after os.Environ() — POSIX leaves duplicate
+// handling unspecified; ash often honors the first assignment when looking up commands.
+func containerExecEnv() []string {
+	const pathEnv = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	out := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	out = append(out, pathEnv)
+	return out
+}
+
 type ContainerOptions struct {
+	User        string            `json:"user"`
 	MemoryMB    int               `json:"memory"`
 	CPUMax      int               `json:"cpu"`
 	CPUSet      string            `json:"cpuset"`
@@ -39,10 +57,12 @@ type ContainerOptions struct {
 	OOMScoreAdj int               `json:"oom_score_adj"`
 	Sysctls     map[string]string `json:"sysctls"`
 	DBMode      bool              `json:"db_mode"`
+	ShmSize     int               `json:"shm_size"` // /dev/shm size in MB (default 256 MB for DB containers)
+	Hostname    string            `json:"hostname,omitempty"`
 }
 
 // RunCommand runs a container and returns all output at once (used for detached mode).
-func RunCommand(ctx context.Context, containerID string, image string, opts ContainerOptions, detached bool, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string) ([]byte, error) {
+func RunCommand(ctx context.Context, containerID string, image string, opts ContainerOptions, detached bool, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, name string, project string) ([]byte, error) {
 	if !security.ValidContainerID(containerID) {
 		return nil, fmt.Errorf("invalid container id")
 	}
@@ -66,6 +86,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	volumesJSON, _ := json.Marshal(volumes)
 	userEnvJSON, _ := json.Marshal(userEnv)
 
+	opts.Hostname = name
 	optsJSON, _ := json.Marshal(opts)
 	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	// Detached containers must not inherit the request context; the HTTP handler returns
@@ -107,7 +128,8 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		Cloneflags: syscall.CLONE_NEWPID |
 			syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWNS |
-			syscall.CLONE_NEWNET,
+			syscall.CLONE_NEWNET |
+			syscall.CLONE_NEWIPC,
 	}
 
 	err = cmd.Start()
@@ -124,6 +146,8 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 
 	info := ContainerInfo{
 		ID:        containerID,
+		Name:      name,
+		Project:   project,
 		Image:     image,
 		Command:   strings.Join(cmdArgs, " "),
 		PID:       cmd.Process.Pid,
@@ -133,7 +157,9 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		ExitCode:  0,
 		Ports:     portMap,
 	}
+	info.IP = ip
 	RegisterContainer(info)
+	syncServiceDiscovery(containerID, project)
 	startHealthMonitor(containerID, cmd.Process.Pid, imgConfig)
 
 	if detached {
@@ -155,6 +181,141 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		return out.Bytes(), fmt.Errorf("container run aborted by client: %w", ctx.Err())
 	}
 	return out.Bytes(), err
+}
+
+// RunCommandInteractive starts a container with a PTY and bridges it to the provided IO streams.
+func RunCommandInteractive(ctx context.Context, containerID string, image string, opts ContainerOptions, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, stdin io.Reader, stdout io.Writer, name string, project string) error {
+	if !security.ValidContainerID(containerID) {
+		return fmt.Errorf("invalid container id")
+	}
+
+	// 1. Allocate PTY
+	ptymaster, ptyslave, err := utils.StartPTY()
+	if err != nil {
+		fmt.Printf("[error] pty allocation failed: %v\n", err)
+		return fmt.Errorf("pty allocation failed: %w", err)
+	}
+	defer ptymaster.Close()
+	defer ptyslave.Close()
+
+	fmt.Printf("[debug] PTY allocated: slave=%s\n", ptyslave.Name())
+
+	// 2. Resolve image metadata
+	imgConfig, err := ResolveImageConfig(image)
+	if err != nil {
+		return fmt.Errorf("failed to resolve image config: %v", err)
+	}
+	configJSON, _ := json.Marshal(imgConfig)
+	lowerDirs, err := ResolveImageLayers(image)
+	if err != nil {
+		return fmt.Errorf("failed to resolve image layers: %v", err)
+	}
+	layersJSON, _ := json.Marshal(lowerDirs)
+	volumesJSON, _ := json.Marshal(volumes)
+	userEnvJSON, _ := json.Marshal(userEnv)
+	opts.Hostname = name
+	optsJSON, _ := json.Marshal(opts)
+
+	// 3. Prepare child process
+	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
+	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
+	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
+
+	// PTY slave becomes Stdin/Stdout/Stderr for the child
+	cmd.Stdin = ptyslave
+	cmd.Stdout = ptyslave
+	cmd.Stderr = ptyslave
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET | syscall.CLONE_NEWIPC,
+		Setsid:     true,
+		Setctty:    true,
+		Ctty:       0,
+	}
+
+	// 4. Prepare container FS (same as non-interactive)
+	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
+	os.MkdirAll(filepath.Join(containerPath, "upper"), 0755)
+	os.MkdirAll(filepath.Join(containerPath, "work"), 0755)
+	os.MkdirAll(filepath.Join(containerPath, "rootfs"), 0755)
+	_ = exec.Command("chown", "-R", "0:0", containerPath).Run()
+	if err := MountRootfs(containerID, lowerDirs); err != nil {
+		return fmt.Errorf("failed to mount rootfs: %v", err)
+	}
+
+	logFile, _ := os.Create(filepath.Join(containerPath, "container.log"))
+	defer logFile.Close()
+
+	fmt.Printf("[debug] starting interactive child: %v\n", cmdArgs)
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("[error] child start failed: %v\n", err)
+		return err
+	}
+	fmt.Printf("[debug] child started pid=%d\n", cmd.Process.Pid)
+
+	// Networking
+	ip := network.AllocateIP()
+	if netErr := network.SetupContainerNetwork(cmd.Process.Pid, containerID, ip, portMap); netErr != nil {
+		fmt.Printf("[warn] network setup failed: %v\n", netErr)
+	}
+
+	info := ContainerInfo{
+		ID:        containerID,
+		Name:      name,
+		Project:   project,
+		Image:     image,
+		Command:   strings.Join(cmdArgs, " "),
+		PID:       cmd.Process.Pid,
+		Status:    "running",
+		CreatedAt: time.Now(),
+		Ports:     portMap,
+		IP:        ip,
+	}
+	RegisterContainer(info)
+	syncServiceDiscovery(containerID, project)
+	startHealthMonitor(containerID, cmd.Process.Pid, imgConfig)
+
+	// 5. Bridge I/O
+	done := make(chan struct{})
+	go func() {
+		// Pipe stdin to PTY master
+		fmt.Printf("[debug] starting stdin -> ptymaster relay\n")
+		_, _ = io.Copy(ptymaster, stdin)
+		fmt.Printf("[debug] stdin relay finished\n")
+	}()
+
+	go func() {
+		// Pipe PTY master to stdout AND logfile with flushing
+		fmt.Printf("[debug] starting ptymaster -> stdout relay\n")
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := ptymaster.Read(buf)
+			if n > 0 {
+				_, _ = stdout.Write(buf[:n])
+				_, _ = logFile.Write(buf[:n])
+				if flusher, ok := stdout.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+			if err != nil {
+				fmt.Printf("[debug] ptymaster read finished: %v\n", err)
+				break
+			}
+		}
+		close(done)
+	}()
+
+	// Wait for process to exit or context to be cancelled
+	err = cmd.Wait()
+	MarkContainerExited(containerID, exitCode(err))
+	network.TeardownContainerNetwork(containerID, portMap, ip)
+
+	// Briefly wait to ensure terminal output is flushed
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	return err
 }
 
 func exitCode(err error) int {
@@ -213,7 +374,7 @@ func startHealthMonitor(containerID string, pid int, cfg *models.OCIConfig) {
 }
 
 // RunCommandStream runs a container in foreground mode, streaming output directly to out in real-time.
-func RunCommandStream(ctx context.Context, containerID string, image string, opts ContainerOptions, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, out io.Writer) error {
+func RunCommandStream(ctx context.Context, containerID string, image string, opts ContainerOptions, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, out io.Writer, name string, project string) error {
 	if !security.ValidContainerID(containerID) {
 		return fmt.Errorf("invalid container id")
 	}
@@ -237,6 +398,7 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 	volumesJSON, _ := json.Marshal(volumes)
 	userEnvJSON, _ := json.Marshal(userEnv)
 
+	opts.Hostname = name
 	optsJSON, _ := json.Marshal(opts)
 	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
@@ -266,7 +428,8 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 		Cloneflags: syscall.CLONE_NEWPID |
 			syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWNS |
-			syscall.CLONE_NEWNET,
+			syscall.CLONE_NEWNET |
+			syscall.CLONE_NEWIPC,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -283,6 +446,8 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 
 	info := ContainerInfo{
 		ID:        containerID,
+		Name:      name,
+		Project:   project,
 		Image:     image,
 		Command:   strings.Join(cmdArgs, " "),
 		PID:       cmd.Process.Pid,
@@ -292,7 +457,9 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 		ExitCode:  0,
 		Ports:     portMap,
 	}
+	info.IP = ip
 	RegisterContainer(info)
+	syncServiceDiscovery(containerID, project)
 	startHealthMonitor(containerID, cmd.Process.Pid, imgConfig)
 
 	err = cmd.Wait()
@@ -510,4 +677,107 @@ func isDirEmpty(name string) bool {
 
 	_, err = f.Readdirnames(1)
 	return err == io.EOF
+}
+
+// ExecCommand runs a command inside a running container's namespaces and returns output.
+func ExecCommand(ctx context.Context, pid int, cmdArgs []string) ([]byte, error) {
+	nsenterPath, err := exec.LookPath("nsenter")
+	if err != nil {
+		return nil, fmt.Errorf("nsenter not found: %v", err)
+	}
+
+	pidStr := strconv.Itoa(pid)
+	args := []string{"-t", pidStr, "-m", "-u", "-n", "-i", "-p", "--"}
+	args = append(args, cmdArgs...)
+
+	cmd := exec.CommandContext(ctx, nsenterPath, args...)
+	cmd.Env = containerExecEnv()
+	return cmd.CombinedOutput()
+}
+
+// ExecCommandInteractive runs a command inside a running container's namespaces with a PTY.
+func ExecCommandInteractive(ctx context.Context, pid int, cmdArgs []string, stdin io.Reader, stdout io.Writer) error {
+	nsenterPath, err := exec.LookPath("nsenter")
+	if err != nil {
+		return fmt.Errorf("nsenter not found: %v", err)
+	}
+
+	pidStr := strconv.Itoa(pid)
+	args := []string{"-t", pidStr, "-m", "-u", "-n", "-i", "-p", "--"}
+	args = append(args, cmdArgs...)
+
+	// For interactive exec, we use a PTY just like RunCommandInteractive
+	ptymaster, ptyslave, err := utils.StartPTY()
+	if err != nil {
+		return fmt.Errorf("pty allocation failed: %w", err)
+	}
+	defer ptymaster.Close()
+	defer ptyslave.Close()
+
+	cmd := exec.CommandContext(ctx, nsenterPath, args...)
+	cmd.Env = containerExecEnv()
+	cmd.Stdin = ptyslave
+	cmd.Stdout = ptyslave
+	cmd.Stderr = ptyslave
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(ptymaster, stdin)
+	}()
+
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := ptymaster.Read(buf)
+			if n > 0 {
+				_, _ = stdout.Write(buf[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
+		close(done)
+	}()
+
+	err = cmd.Wait()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+	}
+	return err
+}
+
+func syncServiceDiscovery(containerID, project string) {
+	if project == "" {
+		return
+	}
+	containers := GetAllContainers()
+	var hostsContent strings.Builder
+	hostsContent.WriteString("127.0.0.1\tlocalhost\n")
+	hostsContent.WriteString("::1\tlocalhost ip6-localhost ip6-loopback\n")
+	hostsContent.WriteString("ff02::1\tip6-allnodes\n")
+	hostsContent.WriteString("ff02::2\tip6-allrouters\n\n")
+
+	for _, c := range containers {
+		if c.Project == project && c.Status == "running" && c.IP != "" {
+			if c.Name != "" {
+				hostsContent.WriteString(fmt.Sprintf("%s\t%s\n", c.IP, c.Name))
+			}
+			hostsContent.WriteString(fmt.Sprintf("%s\t%s\n", c.IP, c.ID))
+		}
+	}
+
+	hostsPath := filepath.Join(config.DataRoot, "containers", containerID, "rootfs", "etc", "hosts")
+	// Ensure etc dir exists in rootfs
+	os.MkdirAll(filepath.Dir(hostsPath), 0755)
+	_ = os.WriteFile(hostsPath, []byte(hostsContent.String()), 0644)
 }

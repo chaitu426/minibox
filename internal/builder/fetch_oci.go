@@ -8,10 +8,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chaitu426/minibox/internal/config"
 	"github.com/chaitu426/minibox/internal/utils"
 )
+
+// maxConcurrentLayerPulls limits simultaneous layer downloads to avoid
+// overwhelming Docker's CDN and causing EOF / RST drops on slow connections.
+const maxConcurrentLayerPulls = 3
+
+// layerDownloadRetries is the number of times to retry a failing layer download
+// before giving up. Handles transient EOF / network blips from Docker's CDN.
+const layerDownloadRetries = 3
 
 type authChallenge struct {
 	Realm   string
@@ -83,15 +92,76 @@ type manifestV2 struct {
 	} `json:"manifests"`
 }
 
+// downloadLayerWithRetry downloads a single blob to a temp file, retrying up to
+// layerDownloadRetries times on transient errors (EOF, connection reset, etc.).
+func downloadLayerWithRetry(client *http.Client, blobURL, token, digest string, out io.Writer) (string, error) {
+	tmpTar := filepath.Join(config.DataRoot, "tmp-layer-"+digest+".tar.gz")
+
+	var lastErr error
+	for attempt := 1; attempt <= layerDownloadRetries; attempt++ {
+		if attempt > 1 {
+			// Exponential backoff: 2s, 4s
+			wait := time.Duration(attempt) * 2 * time.Second
+			fmt.Fprintf(out, "[base] layer %s download failed (%v), retrying in %s (attempt %d/%d)...\n",
+				digest[:12], lastErr, wait, attempt, layerDownloadRetries)
+			time.Sleep(wait)
+		}
+
+		req, err := http.NewRequest("GET", blobURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch: %w", err)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %s", resp.Status)
+			continue
+		}
+
+		f, err := os.Create(tmpTar)
+		if err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+
+		_, copyErr := io.Copy(f, resp.Body)
+		f.Close()
+		resp.Body.Close()
+
+		if copyErr != nil {
+			// Remove partial download so a retry starts fresh
+			os.Remove(tmpTar)
+			lastErr = fmt.Errorf("copy: %w", copyErr)
+			continue
+		}
+
+		// Success
+		return tmpTar, nil
+	}
+
+	return "", fmt.Errorf("layer %s failed after %d attempts: %w", digest[:12], layerDownloadRetries, lastErr)
+}
+
 // FetchOCIImage downloads an image from a Docker V2 registry and extracts its layers to destDir
 func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 	ref := utils.ParseImageRef(imageRef)
-	
+
 	registryURL := ref.Registry
 	if !strings.HasPrefix(registryURL, "http") {
 		registryURL = "https://" + registryURL
 	}
-	
+
 	manifestURL := fmt.Sprintf("%s/v2/%s/manifests/%s", registryURL, ref.Repo, ref.Tag)
 
 	client := &http.Client{}
@@ -167,13 +237,13 @@ func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 		if token != "" {
 			reqNested.Header.Set("Authorization", "Bearer "+token)
 		}
-		
+
 		respNested, err := client.Do(reqNested)
 		if err != nil {
 			return fmt.Errorf("failed to fetch nested manifest: %w", err)
 		}
 		defer respNested.Body.Close()
-		
+
 		if respNested.StatusCode != 200 {
 			return fmt.Errorf("failed to fetch nested manifest: %s", respNested.Status)
 		}
@@ -182,17 +252,21 @@ func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 		}
 	}
 
-	fmt.Fprintf(out, "[base] %s has %d layers\n", imageRef, len(manifest.Layers))
-	
+	totalLayers := len(manifest.Layers)
+	fmt.Fprintf(out, "[base] %s has %d layers\n", imageRef, totalLayers)
+
 	// Create destDir (the consolidated rootfs)
 	os.MkdirAll(destDir, 0755)
 
 	type layerResult struct {
-		index   int
-		path    string
-		err     error
+		index int
+		path  string
+		err   error
 	}
-	results := make(chan layerResult, len(manifest.Layers))
+	results := make(chan layerResult, totalLayers)
+
+	// Semaphore to cap concurrent downloads — prevents EOF from CDN rate limiting
+	sem := make(chan struct{}, maxConcurrentLayerPulls)
 
 	for i, layer := range manifest.Layers {
 		go func(idx int, l struct {
@@ -200,35 +274,13 @@ func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 			Size      int64  `json:"size"`
 			Digest    string `json:"digest"`
 		}) {
-			fmt.Fprintf(out, "[base] pulling layer %d/%d (%s)...\n", idx+1, len(manifest.Layers), l.Digest[:12])
-			
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+
+			fmt.Fprintf(out, "[base] pulling layer %d/%d (%s)...\n", idx+1, totalLayers, l.Digest[:12])
+
 			blobURL := fmt.Sprintf("%s/v2/%s/blobs/%s", registryURL, ref.Repo, l.Digest)
-			req, _ := http.NewRequest("GET", blobURL, nil)
-			if token != "" {
-				req.Header.Set("Authorization", "Bearer "+token)
-			}
-
-			resp, err := client.Do(req)
-			if err != nil {
-				results <- layerResult{idx, "", fmt.Errorf("failed to fetch layer %s: %w", l.Digest, err)}
-				return
-			}
-			defer resp.Body.Close()
-			
-			if resp.StatusCode != 200 {
-				results <- layerResult{idx, "", fmt.Errorf("failed to download layer %s: %s", l.Digest, resp.Status)}
-				return
-			}
-
-			// Download to temp tarball
-			tmpTar := filepath.Join(config.DataRoot, "tmp-layer-"+l.Digest+".tar.gz")
-			f, err := os.Create(tmpTar)
-			if err != nil {
-				results <- layerResult{idx, "", err}
-				return
-			}
-			_, err = io.Copy(f, resp.Body)
-			f.Close()
+			tmpTar, err := downloadLayerWithRetry(client, blobURL, token, l.Digest, out)
 			if err != nil {
 				results <- layerResult{idx, "", err}
 				return
@@ -237,9 +289,9 @@ func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 		}(i, layer)
 	}
 
-	// We must extract in ORDER
-	tempPaths := make([]string, len(manifest.Layers))
-	for i := 0; i < len(manifest.Layers); i++ {
+	// Collect all results (parallel downloads complete in any order)
+	tempPaths := make([]string, totalLayers)
+	for i := 0; i < totalLayers; i++ {
 		res := <-results
 		if res.err != nil {
 			return res.err
@@ -247,8 +299,9 @@ func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 		tempPaths[res.index] = res.path
 	}
 
+	// Extract in ORDER (layer N overwrites layer N-1 — correct OCI semantics)
 	for i, tmpTar := range tempPaths {
-		fmt.Fprintf(out, "[base] extracting layer %d/%d...\n", i+1, len(manifest.Layers))
+		fmt.Fprintf(out, "[base] extracting layer %d/%d...\n", i+1, totalLayers)
 		err = utils.ExtractTarGz(tmpTar, destDir)
 		os.Remove(tmpTar)
 		if err != nil {
