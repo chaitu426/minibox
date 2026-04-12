@@ -47,7 +47,7 @@
       "y": 46,
       "width": 1200,
       "height": 18,
-      "text": "Boxfile text → Cfile AST → DAG wavefronts → overlay layers → OCI image",
+      "text": "Boxfile text → Cfile AST → DAG wavefronts → compose auto-build → overlay layers → OCI image",
       "fontSize": 12,
       "fontFamily": 1,
       "textAlign": "left",
@@ -73,7 +73,7 @@
       "link": null,
       "locked": false,
       "containerId": null,
-      "originalText": "Boxfile text → Cfile AST → DAG wavefronts → overlay layers → OCI image",
+      "originalText": "Boxfile text → Cfile AST → DAG wavefronts → compose auto-build → overlay layers → OCI image",
       "autoResize": true,
       "lineHeight": 1.5
     },

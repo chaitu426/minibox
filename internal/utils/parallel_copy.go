@@ -13,7 +13,7 @@ type copyTask struct {
 	dst string
 }
 
-// CopyRecursiveParallel copies a directory tree in parallel using a worker pool.
+// Parallel directory copy.
 func CopyRecursiveParallel(src, dst string, ignore func(string) bool) error {
 	numWorkers := runtime.NumCPU() * 2
 	if numWorkers > 16 {
@@ -24,7 +24,7 @@ func CopyRecursiveParallel(src, dst string, ignore func(string) bool) error {
 	errChan := make(chan error, 1)
 	var wg sync.WaitGroup
 
-	// Start workers
+	// Start worker pool.
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
@@ -41,7 +41,7 @@ func CopyRecursiveParallel(src, dst string, ignore func(string) bool) error {
 		}()
 	}
 
-	// Producer: walk the filesystem and send tasks to workers
+	// Walk and send tasks.
 	go func() {
 		defer close(tasks)
 		err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
@@ -65,7 +65,7 @@ func CopyRecursiveParallel(src, dst string, ignore func(string) bool) error {
 				return os.MkdirAll(destPath, 0755)
 			}
 
-			// Send file or symlink copy task to workers
+			// Queue task.
 			select {
 			case tasks <- copyTask{path, destPath}:
 			case <-errChan: // Stop if a worker failed
@@ -81,7 +81,7 @@ func CopyRecursiveParallel(src, dst string, ignore func(string) bool) error {
 		}
 	}()
 
-	// Wait for completion
+	// Wait until done.
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -107,11 +107,11 @@ func copyIndividual(src, dst string) error {
 	}
 
 	if info.Mode().IsRegular() {
-		// Attempt Reflink first
+		// Try reflink (FICLONE).
 		if err := CopyReflink(src, dst); err == nil {
 			return nil
 		}
-		// Fallback to byte copy
+		// Byte copy fallback.
 		return CopyFile(src, dst)
 	}
 

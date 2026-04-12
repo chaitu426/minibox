@@ -137,10 +137,7 @@ func GetAllContainers() map[string]ContainerInfo {
 	}
 
 	if changed {
-		// Update state file asynchronously to avoid blocking the caller too much,
-		// but since GetAllContainers is often followed by a write or is in a mutex,
-		// we should be careful. Here we'll just return the updated map.
-		// The next Register/Update call will persist it, or we can persist it now.
+		// Update state asynchronously so it doesn't block.
 		go saveContainers(containers)
 	}
 

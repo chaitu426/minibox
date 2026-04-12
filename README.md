@@ -53,7 +53,14 @@ This repo is **beta** quality: it is usable for testing and learning, but there 
 ```mermaid
 flowchart LR
   U[User] --> CLI[minibox CLI]
-  CLI -->|HTTP| D[miniboxd daemon]
+
+  subgraph CLI_Logic [CLI]
+    CLI --> CORE[Core: run, build, ps...]
+    CLI --> COMP[Compose Orchestrator]
+    COMP --> CDAG[Service DAG]
+  end
+
+  CORE & COMP -->|HTTP| D[miniboxd daemon]
 
   D --> API[API handlers]
   API --> B[Builder]
@@ -216,6 +223,43 @@ Detached + port mapping:
 ```bash
 minibox run -d -p 3001:3000 demo
 minibox ps
+```
+
+### Use Compose (Orchestration)
+
+Create a `minibox-compose.yaml` for multi-container apps:
+
+```yaml
+name: my-app
+services:
+  db:
+    image: redis:latest
+    db_mode: true
+    data: /data
+    ports:
+      - "6379:6379"
+
+  web:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+    environment:
+      - REDIS_HOST=db
+```
+
+Run the project:
+
+```bash
+minibox compose up
+minibox compose ps
+minibox compose logs -f
+minibox compose down
+minibox compose build
+minibox compose start
+minibox compose stop
+minibox compose rm
 ```
 
 ### Basic maintenance

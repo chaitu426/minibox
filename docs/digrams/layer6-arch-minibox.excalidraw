@@ -47,7 +47,7 @@
       "y": 46,
       "width": 1200,
       "height": 18,
-      "text": "OCI blob store · indexer · lazy FUSE mount · image archive · cgroup stats · health checks",
+      "text": "OCI blob store · indexer · lazy FUSE mount · image archive · project state · health checks",
       "fontSize": 12,
       "fontFamily": 1,
       "textAlign": "left",
@@ -73,7 +73,7 @@
       "link": null,
       "locked": false,
       "containerId": null,
-      "originalText": "OCI blob store · indexer · lazy FUSE mount · image archive · cgroup stats · health checks",
+      "originalText": "OCI blob store · indexer · lazy FUSE mount · image archive · project state · health checks",
       "autoResize": true,
       "lineHeight": 1.5
     },

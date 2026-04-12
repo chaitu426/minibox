@@ -42,11 +42,11 @@ func apiBase() string {
 }
 
 func httpClient() *http.Client {
-	// Keep a sane default so CLI doesn't hang forever.
+	// Set default timeout. CLI hang nako vhayla.
 	return &http.Client{Timeout: 60 * time.Second}
 }
 
-// apiDo sends the request, adding Authorization when MINIBOX_API_TOKEN is set.
+// Send request. Add token if present
 func apiDo(req *http.Request) (*http.Response, error) {
 	if t := strings.TrimSpace(os.Getenv("MINIBOX_API_TOKEN")); t != "" {
 		req.Header.Set("Authorization", "Bearer "+t)
@@ -85,8 +85,7 @@ func apiPOST(path, contentType string, body io.Reader) (*http.Response, error) {
 	return apiDo(req)
 }
 
-// apiPOSTStream is for long-lived streaming endpoints (e.g. foreground run/build logs).
-// It intentionally uses no client timeout so active streams are not cut mid-run.
+// For long streaming (logs/build). No timeout required bhau.
 func apiPOSTStream(path, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, apiBase()+path, body)
 	if err != nil {
@@ -251,7 +250,7 @@ func runCommand() {
 			interactive = true
 			i++
 		case "-t":
-			// TTY part; we handle as part of interactive
+			// TTY (handled via interactive)
 			i++
 		case "-m":
 			i++
@@ -444,11 +443,11 @@ func dbCommand() {
 		exitf(2, "Usage: minibox db [run|shell] ...")
 	}
 
-	detached := true // DB containers should typically run detached.
+	detached := true // DBs run detached by default
 	name := ""
 	dataPath := ""
 	cmdStr := ""
-	shmSizeMB := 256 // 256 MB default — enough for Postgres shared_buffers, MongoDB wiredTiger, Redis AOF buffer.
+	shmSizeMB := 256 // Default SHM for DBs
 	portMap := map[string]string{}
 	var userEnv []string
 	user := ""
@@ -543,7 +542,7 @@ doneFlags:
 	}
 
 	if name == "" {
-		// Stable but simple default: derive from image name.
+		// Default name from image
 		name = strings.ReplaceAll(image, ":", "-")
 		name = strings.ReplaceAll(name, ".", "-")
 	}
@@ -552,7 +551,7 @@ doneFlags:
 		dataPath = "/var/lib/minibox-data"
 	}
 
-	// Named volume: daemon resolves to DataRoot/volumes/<name>.
+	// Named volume (DataRoot/volumes/<name>)
 	namedVolumes := map[string]string{
 		name + "-data": dataPath,
 	}
@@ -655,8 +654,7 @@ doneFlags:
 	}
 }
 
-// readProcEnvVar reads a single environment variable from a running process
-// via /proc/<pid>/environ. This works across namespaces since procfs is host-mounted.
+// readProcEnvVar reads env from /proc/<pid>/environ
 func readProcEnvVar(pid int, key string) string {
 	if pid <= 0 {
 		return ""
@@ -712,7 +710,7 @@ func dbShell(id string) {
 		mongoUser := readProcEnvVar(pid, "MONGO_INITDB_ROOT_USERNAME")
 		mongoPass := readProcEnvVar(pid, "MONGO_INITDB_ROOT_PASSWORD")
 
-		// Robustly locate mongosh (MongoDB 7 puts it in /usr/bin; older builds use /usr/local/bin).
+		// Locate mongosh
 		const findMongosh = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; " +
 			"MONGOSH=$(command -v mongosh 2>/dev/null); " +
 			"[ -z \"$MONGOSH\" ] && for p in /usr/bin/mongosh /usr/local/bin/mongosh /opt/mongosh/bin/mongosh; do [ -x \"$p\" ] && MONGOSH=\"$p\" && break; done; " +
@@ -1582,8 +1580,7 @@ func composeLifecycleAction(projectName string, action string) {
 			// Stop then re-run
 			apiPOST("/containers/stop?id="+url.QueryEscape(id), "application/json", nil)
 			apiPOST("/containers/remove?id="+url.QueryEscape(id), "application/json", nil)
-			// Wait, to re-run we need the compose config. 
-			// composeRestart handles this better by calling composeUp with a filter.
+			// restart handled by composeRestart
 		}
 	}
 }

@@ -6,3 +6,5 @@ daemon.log
 
 # demo recordings (keep scripts/docs tracked)
 /vedio
+
+node_modules

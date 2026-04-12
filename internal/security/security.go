@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Container IDs are exactly 8 lowercase hex digits (see handler.generateID).
+// 8-digit hex IDs.
 var containerIDRe = regexp.MustCompile(`^[a-f0-9]{8}$`)
 var volumeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
@@ -20,12 +20,12 @@ var (
 	ErrBuildPathNotAllowed = errors.New("build context path is not under an allowed prefix")
 )
 
-// ValidContainerID reports whether id matches the expected container identifier format.
+// Validate ID format.
 func ValidContainerID(id string) bool {
 	return containerIDRe.MatchString(id)
 }
 
-// ValidVolumeName enforces a conservative name format for daemon-managed volumes.
+// Validate volume name.
 func ValidVolumeName(name string) error {
 	if name == "" || len(name) > 64 {
 		return fmt.Errorf("invalid volume name")
@@ -36,7 +36,7 @@ func ValidVolumeName(name string) error {
 	return nil
 }
 
-// ContainerDir returns the absolute path to a container's directory under dataRoot, or an error.
+// Get container absolute path.
 func ContainerDir(dataRoot, id string) (string, error) {
 	if !ValidContainerID(id) {
 		return "", ErrInvalidContainerID
@@ -44,7 +44,7 @@ func ContainerDir(dataRoot, id string) (string, error) {
 	return filepath.Abs(filepath.Join(dataRoot, "containers", id))
 }
 
-// ContainerFile resolves a file path under a container directory after validating id.
+// Resolve file inside container dir.
 func ContainerFile(dataRoot, id string, parts ...string) (string, error) {
 	dir, err := ContainerDir(dataRoot, id)
 	if err != nil {
@@ -61,7 +61,7 @@ func ContainerFile(dataRoot, id string, parts ...string) (string, error) {
 	return abs, nil
 }
 
-// ResolveAllowedPath resolves path to an absolute path and ensures it lies under one of allowedPrefixes.
+// Resolve path under allowed prefixes.
 func ResolveAllowedPath(path string, allowedPrefixes []string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("empty path")
@@ -90,7 +90,7 @@ func ResolveAllowedPath(path string, allowedPrefixes []string) (string, error) {
 	return "", ErrBuildPathNotAllowed
 }
 
-// ValidImageName rejects path-like or empty names used in the image index API.
+// Validate image name.
 func ValidImageName(name string) error {
 	if name == "" || len(name) > 256 {
 		return fmt.Errorf("invalid image name")
@@ -101,7 +101,7 @@ func ValidImageName(name string) error {
 	return nil
 }
 
-// ValidHostPort parses a TCP port string for host port mappings (1-65535).
+// Validate TCP port.
 func ValidHostPort(s string) error {
 	if s == "" {
 		return fmt.Errorf("empty port")
@@ -118,12 +118,12 @@ func ValidHostPort(s string) error {
 	return nil
 }
 
-// Forbidden system paths for data safeguards
+// Protected system paths.
 var forbiddenPaths = []string{
 	"/", "/home", "/root", "/usr", "/etc", "/var", "/boot", "/bin", "/sbin", "/dev", "/proc", "/sys", "/run",
 }
 
-// SafeToDelete verifies that the path is strictly under DataRoot and not a protected system path.
+// Safety check before delete.
 func SafeToDelete(dataRoot, path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {

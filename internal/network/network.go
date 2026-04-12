@@ -29,10 +29,10 @@ const (
 	GatewayIP  = "172.19.0.1"
 )
 
-// ipCounter is used to generate unique container IPs starting from .2
+// Assign unique container IP (starting from .2).
 var ipCounter uint32 = 1
 
-// AllocateIP assigns the next available container IP in the 172.19.0.x range.
+// Allocate next available IP in 172.19.0.x.
 func AllocateIP() string {
 	n := atomic.AddUint32(&ipCounter, 1)
 	return fmt.Sprintf("%s.%d", Subnet, n)
@@ -41,9 +41,7 @@ func AllocateIP() string {
 // miniboxBridgeDNATPrefix matches DNAT targets on the minibox bridge (e.g. 172.19.0.2:6379).
 var miniboxBridgeDNATPrefix = Subnet + "."
 
-// removeStaleMiniboxNATForHostPort deletes older minibox DNAT rules for the same host TCP port.
-// Without this, AppendUnique stacks multiple --to-destination values; the first iptables match wins
-// and localhost port maps break (e.g. 127.0.0.1:6379 sent to a stale container IP).
+// Delete stale DNAT rules to avoid localhost port mapping issues.
 func removeStaleMiniboxNATForHostPort(ipt *iptables.IPTables, hostPort string) {
 	for _, chain := range []string{"PREROUTING", "OUTPUT"} {
 		for {

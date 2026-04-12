@@ -30,8 +30,7 @@ import (
 
 var blockPrefixRe = regexp.MustCompile(`^\[[A-Za-z0-9._-]+\]\s`)
 
-// prefixLineWriter prefixes each output line and writes it atomically, so parallel blocks
-// don't interleave partial lines in the streamed build logs.
+// Prefix lines to avoid log mixing in parallel blocks.
 type prefixLineWriter struct {
 	mu           *sync.Mutex
 	prefix       string
@@ -142,7 +141,7 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 	var lowerDirs []string
 	currentWorkdir := "/"
 
-	// 1. Resolve Base Image (Unified Resolver)
+	// Resolve base image.
 	t0 := time.Now()
 	baseLowerDirs, baseEnv, err := resolveBaseImage(ctx, cfile.BaseImage, out)
 	if err != nil {
@@ -190,7 +189,7 @@ func BuildImage(ctx context.Context, cfile *models.Cfile, imageName string, cont
 		}
 	}
 
-	// Finalize OCI image (layer blobs + config + manifest + index).
+	// Finalizing OCI image. Jya paryant manifest ani layers barobar ahe.
 	tFinalize := time.Now()
 	fmt.Fprintf(out, "[finalize] writing %d layer(s)\n", len(lowerDirs))
 	layerDescriptors := make([]models.OCIDescriptor, len(lowerDirs))

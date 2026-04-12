@@ -485,3 +485,30 @@ Implemented in `cmd/cli/main.go` (orchestrator) and supported by daemon runtime 
     - **OOM Protection**: Sets `oom_score_adj` to `-900`.
     - **Named Volumes**: Automatically provisions a persistent volume directory under `DataRoot/volumes/` to ensure data persists across orchestration cycles.
 
+
+
+
+### resources i read
+
+
+-https://www.youtube.com/watch?v=8fi7uSYlOdc&vl=en
+
+-https://medium.com/@furkan.turkal/how-does-docker-actually-work-the-hard-way-a-technical-deep-diving-c5b8ea2f0422
+
+-https://blog.devgenius.io/docker-didnt-invent-containers-linux-did-e482c155b99b
+
+-https://www.vmware.com/topics/virtual-machine
+
+-https://medium.com/@rifewang/oci-introduction-the-full-journey-from-code-to-container-in-a-kubernetes-environment-1e36d2890ca5
+
+-https://medium.com/plumbersofdatascience/understanding-spark-dags-b82020503444
+
+-https://labs.iximiuz.com/tutorials/container-networking-from-scratch
+
+-https://labs.iximiuz.com/tutorials/container-image-from-scratch
+
+-https://blog.quarkslab.com/digging-into-the-oci-image-specification.html
+
+-chatgpt 
+
+-https://aws.amazon.com/blogs/containers/under-the-hood-lazy-loading-container-images-with-seekable-oci-and-aws-fargate/

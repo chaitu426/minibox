@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// StartPTY allocates a new PTY (master/slave pair) for interactive sessions.
+// Allocate PTY (master/slave).
 func StartPTY() (master *os.File, slave *os.File, err error) {
 	masterfd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -16,14 +16,14 @@ func StartPTY() (master *os.File, slave *os.File, err error) {
 	}
 	master = os.NewFile(uintptr(masterfd), "/dev/ptmx")
 
-	// unlockpt: clear the lock on the slave side
+	// Unlock slave.
 	var n int
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(masterfd), unix.TIOCSPTLCK, uintptr(unsafe.Pointer(&n))); errno != 0 {
 		master.Close()
 		return nil, nil, fmt.Errorf("ioctl TIOCSPTLCK: %w", errno)
 	}
 
-	// getpts: find the slave name
+	// Get slave name.
 	var ptn uint32
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(masterfd), unix.TIOCGPTN, uintptr(unsafe.Pointer(&ptn))); errno != 0 {
 		master.Close()
@@ -31,7 +31,7 @@ func StartPTY() (master *os.File, slave *os.File, err error) {
 	}
 	slaveName := fmt.Sprintf("/dev/pts/%d", ptn)
 
-	// Open the slave side
+	// Open slave.
 	slavefd, err := unix.Open(slaveName, unix.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
 		master.Close()
@@ -42,7 +42,7 @@ func StartPTY() (master *os.File, slave *os.File, err error) {
 	return master, slave, nil
 }
 
-// SetRaw puts a terminal into raw mode (useful for the CLI side).
+// Set terminal to raw mode.
 func SetRaw(fd uintptr) (*unix.Termios, error) {
 	termios, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
 	if err != nil {
@@ -65,7 +65,7 @@ func SetRaw(fd uintptr) (*unix.Termios, error) {
 	return &old, nil
 }
 
-// Restore resets the terminal state.
+// Restore terminal state.
 func Restore(fd uintptr, old *unix.Termios) error {
 	return unix.IoctlSetTermios(int(fd), unix.TCSETS, old)
 }

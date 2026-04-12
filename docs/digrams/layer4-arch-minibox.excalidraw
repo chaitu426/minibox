@@ -47,7 +47,7 @@
       "y": 46,
       "width": 1300,
       "height": 18,
-      "text": "process.go (parent launcher) → Linux namespaces → container.go (child) → init.go (PID 1) → seccomp/caps",
+      "text": "process.go (parent launcher) → Linux namespaces → compose sync → container.go (child) → init.go (PID 1) → seccomp/caps",
       "fontSize": 12,
       "fontFamily": 1,
       "textAlign": "left",
@@ -73,7 +73,7 @@
       "link": null,
       "locked": false,
       "containerId": null,
-      "originalText": "process.go (parent launcher) → Linux namespaces → container.go (child) → init.go (PID 1) → seccomp/caps",
+      "originalText": "process.go (parent launcher) → Linux namespaces → compose sync → container.go (child) → init.go (PID 1) → seccomp/caps",
       "autoResize": true,
       "lineHeight": 1.5
     },

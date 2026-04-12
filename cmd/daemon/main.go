@@ -33,7 +33,7 @@ func main() {
 		return
 	}
 
-	// Ensure DataRoot and necessary directories exist
+	// Ensure DataRoot dirs exist. Folder setup pahijen.
 	dirs := []string{
 		config.DataRoot,
 		filepath.Join(config.DataRoot, "images"),
@@ -49,9 +49,7 @@ func main() {
 		}
 	}
 
-	// Fast startup: don't block on indexing or bridge bring-up.
-	// - Disable startup indexing with MINIBOX_INDEX_ON_STARTUP=0
-	// - Disable startup bridge bring-up with MINIBOX_BRIDGE_ON_STARTUP=0
+	// Fast startup: don't block on indexing or bridge.
 	if os.Getenv("MINIBOX_INDEX_ON_STARTUP") != "0" {
 		go indexExistingBlobs()
 	}

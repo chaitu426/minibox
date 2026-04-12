@@ -152,7 +152,7 @@
       "y": 110.16497877035471,
       "width": 110,
       "height": 13,
-      "text": "minibox build/run/ps/...",
+      "text": "minibox build/run/ps/compose...",
       "fontSize": 10,
       "fontFamily": 1,
       "textAlign": "left",
@@ -178,7 +178,7 @@
       "link": null,
       "locked": false,
       "containerId": null,
-      "originalText": "minibox build/run/ps/...",
+      "originalText": "minibox build/run/ps/compose...",
       "autoResize": true,
       "lineHeight": 1.3
     },

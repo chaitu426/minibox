@@ -24,8 +24,7 @@ type PruneOptions struct {
 	BuildCache bool
 }
 
-// PruneSystem completely garbage collects orphaned blobs and lazy mounts.
-// Optional: can also delete the build cache (DataRoot/layers) when requested.
+// GC orphaned blobs and mounts.
 func PruneSystem() (*PruneReport, error) {
 	return PruneSystemWithOptions(PruneOptions{})
 }
@@ -46,7 +45,7 @@ func PruneSystemWithOptions(opts PruneOptions) (*PruneReport, error) {
 
 	activeBlobs := make(map[string]bool)
 
-	// 1. Gather all active blobs from the index and manifests
+	// Find active blobs.
 	for _, m := range index.Manifests {
 		digest := strings.TrimPrefix(m.Digest, "sha256:")
 		activeBlobs[digest] = true
@@ -69,7 +68,7 @@ func PruneSystemWithOptions(opts PruneOptions) (*PruneReport, error) {
 		}
 	}
 
-	// 2. Scan blobs directory and remove dangling
+	// Remove dangling blobs.
 	blobsDir := filepath.Join(config.DataRoot, "blobs", "sha256")
 	entries, _ := os.ReadDir(blobsDir)
 	for _, e := range entries {
@@ -87,7 +86,7 @@ func PruneSystemWithOptions(opts PruneOptions) (*PruneReport, error) {
 		}
 	}
 
-	// 3. Scan lazy FUSE mounts and teardown dangling
+	// Cleanup dangling FUSE mounts.
 	lazyDir := filepath.Join(config.DataRoot, "lazy")
 	lazyEntries, _ := os.ReadDir(lazyDir)
 	for _, e := range lazyEntries {
@@ -102,7 +101,7 @@ func PruneSystemWithOptions(opts PruneOptions) (*PruneReport, error) {
 		}
 	}
 
-	// 4. Scan extracted full-layers and remove dangling
+	// Cleanup dangling extracted layers.
 	extractedDir := filepath.Join(config.DataRoot, "extracted")
 	extEntries, _ := os.ReadDir(extractedDir)
 	for _, e := range extEntries {
@@ -111,10 +110,10 @@ func PruneSystemWithOptions(opts PruneOptions) (*PruneReport, error) {
 		}
 	}
 
-	// 5. Clean up old tmp layers that failed to finish
+	// Remove incomplete tmp layers.
 	os.RemoveAll(filepath.Join(config.DataRoot, "tmp"))
 
-	// 6. Optional: remove build cache layers (content-addressed upperdirs).
+	// Cleanup build cache if requested.
 	if opts.BuildCache {
 		layersDir := filepath.Join(config.DataRoot, "layers")
 		entries, _ := os.ReadDir(layersDir)

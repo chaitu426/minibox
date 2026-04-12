@@ -1,4 +1,5 @@
 package runtime
+// Container stats calculation. Resources kiti vapartoy te baghyla.
 
 import (
 	"bufio"

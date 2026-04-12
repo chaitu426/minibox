@@ -9,8 +9,7 @@ import (
 	"github.com/chaitu426/minibox/internal/utils"
 )
 
-// SnapshotVolume creates a point-in-time snapshot of a volume's data.
-// It leverages FICLONE (reflink) for zero-copy, near-instant cloning on supported filesystems (Btrfs, XFS).
+// Snapshot volume data. Instant clone via reflink (FICLONE).
 func SnapshotVolume(volumePath string, snapshotID string) (string, error) {
 	if _, err := os.Stat(volumePath); err != nil {
 		return "", fmt.Errorf("volume path not found: %w", err)
@@ -22,7 +21,7 @@ func SnapshotVolume(volumePath string, snapshotID string) (string, error) {
 	}
 
 	start := time.Now()
-	// CopyRecursiveParallel will attempt CopyReflink for every regular file
+	// Parallel copy with reflink support.
 	if err := utils.CopyRecursiveParallel(volumePath, snapshotRoot, nil); err != nil {
 		return "", fmt.Errorf("snapshot copy failed: %w", err)
 	}

@@ -16,8 +16,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// envChildMountNS is set by the daemon when spawning the child with CLONE_NEWNS.
-// If a child is started without that flag, it will unshare on its own.
+// envChildMountNS is for checking CLONE_NEWNS.
+// Child will unshare if flag is missing.
 const envChildMountNS = "MINIBOX_CHILD_NEWNS"
 
 func RunContainer() {
@@ -81,14 +81,24 @@ func RunContainer() {
 	cgPath := filepath.Join("/sys/fs/cgroup/minibox", containerID)
 	os.MkdirAll(cgPath, 0755)
 
+	// Enable controllers on the parent cgroup so limits on this child cgroup
+	// are actually enforced. Without this, cpu/memory/io limits silently fail.
+	parentCtrl := filepath.Join("/sys/fs/cgroup/minibox", "cgroup.subtree_control")
+	os.WriteFile(parentCtrl, []byte("+cpu +memory +io"), 0700)
+
 	if opts.MemoryMB != 0 {
 		memoryMax := strconv.Itoa(opts.MemoryMB * 1024 * 1024)
 		os.WriteFile(filepath.Join(cgPath, "memory.max"), []byte(memoryMax), 0700)
 	}
 
 	if opts.CPUMax != 0 {
-		// cpu.max format: $QUOTA $PERIOD (e.g. "100000 100000" for 1 core)
-		os.WriteFile(filepath.Join(cgPath, "cpu.max"), []byte(strconv.Itoa(opts.CPUMax)), 0700)
+		// cpu.max format: "$QUOTA $PERIOD"
+		// opts.CPUMax is treated as a percentage of one core (1–100).
+		// period is fixed at 100000 µs; quota scales linearly.
+		const period = 100000
+		quota := opts.CPUMax * period / 100
+		cpuMax := fmt.Sprintf("%d %d", quota, period)
+		os.WriteFile(filepath.Join(cgPath, "cpu.max"), []byte(cpuMax), 0700)
 	}
 
 	if opts.CPUSet != "" {
@@ -124,12 +134,8 @@ func RunContainer() {
 		}
 	}
 
-	// Rootfs isolation in child:
-	// - Overlay mount for this container was already created by the daemon (MountRootfs).
-	// - In rootless mode, additional mounts (bind/pivot_root) inside the user namespace
-	//   frequently fail with EPERM. Instead, chroot into the prepared rootfs. Combined
-	//   with namespaces, caps drop, and seccomp this is still strong isolation and
-	//   avoids fragile mount patterns on restrictive kernels.
+	// Apan chroot vapartoy karan pivot_root ne host OS udala hota. Ata sathi asach thivu bhau.
+	// It's still strong isolation when combined with caps and seccomp.
 	if err := os.Chdir(rootfs); err != nil {
 		fmt.Fprintf(os.Stderr, "Error changing directory to rootfs (%s): %v\n", rootfs, err)
 		os.Exit(1)
@@ -145,14 +151,27 @@ func RunContainer() {
 
 	os.MkdirAll("/proc", 0755)
 	procFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
-	if err := unix.Mount("proc", "/proc", "proc", procFlags, ""); err != nil {
-		fmt.Printf("[warn] mount /proc: %v\n", err)
+	// hidepid=2: hides other processes' /proc/<pid> entries from the container.
+	// Without this, any process inside can read /proc/<pid>/environ, cmdline,
+	// fd/ etc. of every other process — a common container info-leak vector.
+	if err := unix.Mount("proc", "/proc", "proc", procFlags, "hidepid=2"); err != nil {
+		// hidepid=2 requires a PID namespace; fall back gracefully if not available.
+		if err2 := unix.Mount("proc", "/proc", "proc", procFlags, ""); err2 != nil {
+			fmt.Printf("[warn] mount /proc: %v\n", err2)
+		} else {
+			fmt.Printf("[warn] mount /proc hidepid=2 failed (%v), mounted without hidepid\n", err)
+		}
 	}
 
 	os.MkdirAll("/sys", 0755)
-	sysFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC | unix.MS_RDONLY)
+	// Mount sysfs. Read-only remount kela pahije, nahi tar jhol hoto.
+	sysFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
 	if err := unix.Mount("sysfs", "/sys", "sysfs", sysFlags, ""); err != nil {
 		fmt.Printf("[warn] mount /sys: %v\n", err)
+	}
+	sysRemountFlags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC | unix.MS_RDONLY | unix.MS_REMOUNT)
+	if err := unix.Mount("", "/sys", "", sysRemountFlags, ""); err != nil {
+		fmt.Printf("[warn] remount /sys read-only: %v\n", err)
 	}
 
 	os.MkdirAll("/dev", 0755)

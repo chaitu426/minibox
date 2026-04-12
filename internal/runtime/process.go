@@ -32,9 +32,7 @@ var (
 	cacheMu     sync.RWMutex
 )
 
-// containerExecEnv is the daemon environment with a single container-oriented PATH.
-// Avoid duplicate PATH keys from appending after os.Environ() — POSIX leaves duplicate
-// handling unspecified; ash often honors the first assignment when looking up commands.
+// Setup container env. Duplicate PATH keys remove karayla.
 func containerExecEnv() []string {
 	const pathEnv = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	out := make([]string, 0, len(os.Environ())+1)
@@ -61,7 +59,7 @@ type ContainerOptions struct {
 	Hostname    string            `json:"hostname,omitempty"`
 }
 
-// RunCommand runs a container and returns all output at once (used for detached mode).
+// Run container (returns early if detached).
 func RunCommand(ctx context.Context, containerID string, image string, opts ContainerOptions, detached bool, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, name string, project string) ([]byte, error) {
 	if !security.ValidContainerID(containerID) {
 		return nil, fmt.Errorf("invalid container id")
@@ -70,7 +68,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		return nil, fmt.Errorf("no command provided")
 	}
 
-	// Resolve image metadata early so the child doesn't need to parse OCI again.
+	// Resolve image metadata.
 	imgConfig, err := ResolveImageConfig(image)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve image config: %v", err)
@@ -89,8 +87,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	opts.Hostname = name
 	optsJSON, _ := json.Marshal(opts)
 	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
-	// Detached containers must not inherit the request context; the HTTP handler returns
-	// immediately and cancels it, which would kill the container process.
+	// Detached containers shouldn't inherit the request context.
 	var cmd *exec.Cmd
 	if detached {
 		cmd = exec.Command("/proc/self/exe", args...)
@@ -99,7 +96,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	}
 	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
 
-	// Prepare container directories and permissions for the rootless child
+	// Prepare container dirs.
 	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
 	os.MkdirAll(filepath.Join(containerPath, "upper"), 0755)
 	os.MkdirAll(filepath.Join(containerPath, "work"), 0755)
@@ -107,7 +104,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	// Container runs as host root for now
 	_ = exec.Command("chown", "-R", "0:0", containerPath).Run()
 
-	// Set up OverlayFS from host root before starting child
+	// Setup OverlayFS.
 	if err := MountRootfs(containerID, lowerDirs); err != nil {
 		return nil, fmt.Errorf("failed to mount rootfs: %v", err)
 	}
@@ -138,7 +135,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		return nil, err
 	}
 
-	// Set up container networking
+	// Setup networking.
 	ip := network.AllocateIP()
 	if netErr := network.SetupContainerNetwork(cmd.Process.Pid, containerID, ip, portMap); netErr != nil {
 		fmt.Printf("[warn] network setup failed: %v\n", netErr)
@@ -183,7 +180,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	return out.Bytes(), err
 }
 
-// RunCommandInteractive starts a container with a PTY and bridges it to the provided IO streams.
+// Run interactive container via PTY.
 func RunCommandInteractive(ctx context.Context, containerID string, image string, opts ContainerOptions, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, stdin io.Reader, stdout io.Writer, name string, project string) error {
 	if !security.ValidContainerID(containerID) {
 		return fmt.Errorf("invalid container id")
@@ -216,7 +213,7 @@ func RunCommandInteractive(ctx context.Context, containerID string, image string
 	opts.Hostname = name
 	optsJSON, _ := json.Marshal(opts)
 
-	// 3. Prepare child process
+	// Prepare child.
 	args := append([]string{"child", containerID, image, string(optsJSON), string(configJSON), string(layersJSON), string(volumesJSON), string(userEnvJSON)}, cmdArgs...)
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", args...)
 	cmd.Env = append(os.Environ(), "MINIBOX_CHILD_NEWNS=1")
@@ -226,13 +223,17 @@ func RunCommandInteractive(ctx context.Context, containerID string, image string
 	cmd.Stdout = ptyslave
 	cmd.Stderr = ptyslave
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET | syscall.CLONE_NEWIPC,
-		Setsid:     true,
-		Setctty:    true,
-		Ctty:       0,
+		Cloneflags: syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWUTS |
+			syscall.CLONE_NEWNS |
+			syscall.CLONE_NEWNET |
+			syscall.CLONE_NEWIPC,
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
 	}
 
-	// 4. Prepare container FS (same as non-interactive)
+	// Setup container FS.
 	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
 	os.MkdirAll(filepath.Join(containerPath, "upper"), 0755)
 	os.MkdirAll(filepath.Join(containerPath, "work"), 0755)
@@ -274,7 +275,7 @@ func RunCommandInteractive(ctx context.Context, containerID string, image string
 	syncServiceDiscovery(containerID, project)
 	startHealthMonitor(containerID, cmd.Process.Pid, imgConfig)
 
-	// 5. Bridge I/O
+	// Bridge I/O.
 	done := make(chan struct{})
 	go func() {
 		// Pipe stdin to PTY master
@@ -373,7 +374,7 @@ func startHealthMonitor(containerID string, pid int, cfg *models.OCIConfig) {
 	}()
 }
 
-// RunCommandStream runs a container in foreground mode, streaming output directly to out in real-time.
+// Run container (streaming output).
 func RunCommandStream(ctx context.Context, containerID string, image string, opts ContainerOptions, portMap map[string]string, volumes map[string]string, userEnv []string, cmdArgs []string, out io.Writer, name string, project string) error {
 	if !security.ValidContainerID(containerID) {
 		return fmt.Errorf("invalid container id")

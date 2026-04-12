@@ -6,7 +6,7 @@ import (
 	"github.com/chaitu426/minibox/internal/api/handler"
 )
 
-// maxBytes wraps a handler with a request body size limit.
+// Limit request body size.
 func maxBytes(n int64, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, n)

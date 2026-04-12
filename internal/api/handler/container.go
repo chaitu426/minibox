@@ -37,7 +37,7 @@ type RunRequest struct {
 	Project      string            `json:"project"`
 }
 
-func generateID() string {
+// Generate ID.
 	b := make([]byte, 4)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
@@ -79,9 +79,7 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Command resolution (OCI/Docker spec):
-	// 1. If user provides command, it usually appends to/overrides depending on Entrypoint.
-	// 2. We always resolve image config to find Entrypoint/Cmd defaults.
+	// Resolve command (OCI spec).
 	imgConfig, err := runtime.ResolveImageConfig(req.Image)
 	if err == nil {
 		if len(req.Command) > 0 {

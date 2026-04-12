@@ -1,7 +1,14 @@
-const { execSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 
-const OUTPUT_FILE = 'test_output.mp4';
+const INPUT_FILE = 'input.avi';              // 👈 your AVI file
+const OUTPUT_FILE = 'compressed_output.mp4';
+
+// 🎯 Tune this
+const CRF = 20;         // 18 = near lossless, 20 = best balance
+const PRESET = 'slow';  // slower = better compression
+
+// ------------------ UI ------------------
 
 function logSection(title) {
   console.log(`\n=== ${title} ===`);
@@ -20,63 +27,107 @@ function info(msg) {
   console.log(`ℹ️  ${msg}`);
 }
 
+function formatGB(bytes) {
+  return (bytes / (1024 ** 3)).toFixed(2) + ' GB';
+}
+
 function cleanup() {
   if (fs.existsSync(OUTPUT_FILE)) {
     fs.unlinkSync(OUTPUT_FILE);
-    info('Old output file removed');
+    info('Old output removed');
   }
 }
 
-try {
-  console.log('🚀 Minibox FFmpeg Smoke Test');
+// ------------------ Main ------------------
+
+function compressVideo() {
+  console.log('🚀 AVI → MP4 High Compression');
   console.log('------------------------------------');
 
-  // 1️⃣ Check FFmpeg installation
-  logSection('FFmpeg Check');
+  // 1️⃣ Input check
+  logSection('Input Check');
 
-  const versionInfo = execSync('ffmpeg -version', { encoding: 'utf8' });
-  const versionLine = versionInfo.split('\n')[0];
+  if (!fs.existsSync(INPUT_FILE)) {
+    fail('AVI file not found');
+  }
 
-  success(`FFmpeg detected → ${versionLine}`);
+  const inputStats = fs.statSync(INPUT_FILE);
+  info(`Input: ${INPUT_FILE}`);
+  info(`Size: ${formatGB(inputStats.size)}`);
 
-  // 2️⃣ Cleanup previous file
+  // 2️⃣ Cleanup
   logSection('Cleanup');
   cleanup();
 
-  // 3️⃣ Generate test video
-  logSection('Video Generation');
+  // 3️⃣ Compression
+  logSection('Compression');
 
-  info('Generating 2-second test video...');
+  const ffmpegArgs = [
+    '-i', INPUT_FILE,
+
+    // 🎥 Video compression (H.265)
+    '-c:v', 'libx265',
+    '-preset', PRESET,
+    '-crf', CRF.toString(),
+
+    // 🎨 Preserve color (important!)
+    '-pix_fmt', 'yuv420p10le',
+
+    // 🔊 Audio compression (AVI audio is huge)
+    '-c:a', 'aac',
+    '-b:a', '128k',
+
+    // Keep all streams
+    '-map', '0',
+
+    '-y',
+    OUTPUT_FILE
+  ];
+
+  info(`CRF: ${CRF}, Preset: ${PRESET}`);
+  info('Compressing...\n');
 
   const start = Date.now();
 
-  execSync(
-    'ffmpeg -f lavfi -i testsrc=duration=2:size=320x240:rate=10 -c:v libx264 -y test_output.mp4',
-    { stdio: 'ignore' }
-  );
+  const ffmpeg = spawn('ffmpeg', ffmpegArgs);
 
-  const duration = Date.now() - start;
+  ffmpeg.stderr.on('data', (data) => {
+    const msg = data.toString();
+    if (msg.includes('frame=')) {
+      process.stdout.write(msg);
+    }
+  });
 
-  // 4️⃣ Validate output
-  logSection('Validation');
+  ffmpeg.on('close', (code) => {
+    logSection('Result');
 
-  if (!fs.existsSync(OUTPUT_FILE)) {
-    fail('Output file was not created');
-  }
+    if (code !== 0) {
+      fail(`FFmpeg failed with code ${code}`);
+    }
 
-  const stats = fs.statSync(OUTPUT_FILE);
+    const outputStats = fs.statSync(OUTPUT_FILE);
+    const time = (Date.now() - start) / 1000;
 
-  if (stats.size === 0) {
-    fail('Output file is empty');
-  }
+    success('Compression completed');
 
-  success(`Video generated successfully`);
-  info(`File: ${OUTPUT_FILE}`);
-  info(`Size: ${stats.size} bytes`);
-  info(`Time: ${duration} ms`);
+    info(`Output: ${OUTPUT_FILE}`);
+    info(`Size: ${formatGB(outputStats.size)}`);
+    info(`Time: ${time.toFixed(2)} sec`);
 
-  console.log('\n🎉 FFmpeg test passed successfully!\n');
+    const reduction = (
+      (1 - outputStats.size / inputStats.size) * 100
+    ).toFixed(2);
 
-} catch (err) {
-  fail(`FFmpeg execution failed → ${err.message}`);
+    info(`Reduced: ${reduction}%`);
+
+    console.log('\n🎉 Done!\n');
+  });
+
+  ffmpeg.on('error', (err) => {
+    fail(`Error → ${err.message}`);
+  });
 }
+
+// ------------------ Run ------------------
+
+compressVideo();

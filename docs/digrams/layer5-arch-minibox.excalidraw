@@ -47,7 +47,7 @@
       "y": 46,
       "width": 485.2955322265625,
       "height": 18,
-      "text": "Bridge + veth pairs + iptables DNAT + NAT masquerade + TCP userspace proxy",
+      "text": "Bridge + veth pairs + iptables DNAT + NAT masquerade + service discovery (hosts sync)",
       "fontSize": 12,
       "fontFamily": 1,
       "textAlign": "left",
@@ -73,7 +73,7 @@
       "link": null,
       "locked": false,
       "containerId": null,
-      "originalText": "Bridge + veth pairs + iptables DNAT + NAT masquerade + TCP userspace proxy",
+      "originalText": "Bridge + veth pairs + iptables DNAT + NAT masquerade + service discovery (hosts sync)",
       "autoResize": true,
       "lineHeight": 1.5
     },

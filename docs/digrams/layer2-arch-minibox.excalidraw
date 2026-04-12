@@ -47,7 +47,7 @@
       "y": 46,
       "width": 1100,
       "height": 18,
-      "text": "HTTP server → auth middleware → method router → handlers → domain packages",
+      "text": "HTTP server → auth middleware → method router → handlers → compose sync → domain packages",
       "fontSize": 12,
       "fontFamily": 1,
       "textAlign": "left",
@@ -73,7 +73,7 @@
       "link": null,
       "locked": false,
       "containerId": null,
-      "originalText": "HTTP server → auth middleware → method router → handlers → domain packages",
+      "originalText": "HTTP server → auth middleware → method router → handlers → compose sync → domain packages",
       "autoResize": true,
       "lineHeight": 1.5
     },

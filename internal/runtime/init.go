@@ -11,7 +11,7 @@ import (
 )
 
 // RunInit is a tiny init process for PID 1 in the container.
-// It forwards signals to the child and reaps zombies.
+// Tiny init process for PID 1
 func RunInit() {
 	if len(os.Args) < 4 || os.Args[2] != "--" {
 		fmt.Fprintln(os.Stderr, "invalid init arguments")
