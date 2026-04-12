@@ -38,6 +38,7 @@ type RunRequest struct {
 }
 
 // Generate ID.
+func generateID() string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
