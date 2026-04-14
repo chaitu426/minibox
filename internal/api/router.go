@@ -28,11 +28,13 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("GET /containers/stats", handler.GetStatsHandler)
 
 	mux.HandleFunc("GET /images", handler.ListImagesHandler)
+	mux.HandleFunc("POST /images/pull", handler.PullImageHandler)
 	mux.HandleFunc("POST /images/save", handler.SaveImageHandler)
 	mux.HandleFunc("POST /images/load", handler.LoadImageHandler)
 
 	mux.HandleFunc("POST /images/remove", handler.RmiHandler)
 	mux.HandleFunc("POST /containers/stop", handler.StopContainerHandler)
+	mux.HandleFunc("POST /containers/start", handler.StartContainerHandler)
 	mux.HandleFunc("POST /containers/kill", handler.KillContainerHandler)
 	mux.HandleFunc("POST /containers/remove", handler.RmContainerHandler)
 	mux.HandleFunc("POST /system/prune", handler.SystemPruneHandler)

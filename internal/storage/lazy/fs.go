@@ -82,8 +82,18 @@ func (r *LazyRoot) OnAdd(ctx context.Context) {
 
 	// Build the tree from the index
 	for _, f := range r.Index.Files {
-		dir, name := filepath.Split(f.Name)
+		cleanName := filepath.Clean(f.Name)
+		if cleanName == "." || cleanName == "/" || cleanName == "" {
+			continue
+		}
+
+		dir, name := filepath.Split(cleanName)
 		parent := r.getOrCreateDir(ctx, dir)
+
+		// Don't add if already exists (might have been created by getOrCreateDir)
+		if parent.GetChild(name) != nil {
+			continue
+		}
 
 		stable := r.getStableAttr(f)
 		id := parent.NewPersistentInode(ctx, &LazyFile{
@@ -109,6 +119,7 @@ func (r *LazyRoot) getStableAttr(f storage.FileIndex) fs.StableAttr {
 }
 
 func (r *LazyRoot) getOrCreateDir(ctx context.Context, path string) *fs.Inode {
+	path = filepath.Clean(path)
 	if path == "" || path == "." || path == "/" {
 		return &r.Inode
 	}

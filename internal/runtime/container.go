@@ -40,7 +40,7 @@ func RunContainer() {
 			os.Exit(1)
 		}
 	}
-
+	image := os.Args[3]
 	optsJSON := os.Args[4]
 	configJSON := os.Args[5]
 	layersJSON := os.Args[6]
@@ -312,7 +312,7 @@ func RunContainer() {
 
 	// DB containers often need to initialize/chown their data directory on first boot.
 	// In DB mode we keep capabilities so the entrypoint can create directories and set ownership.
-	if !opts.DBMode {
+	if !opts.DBMode && image != "nginx"  {
 		dropContainerCapabilities()
 	}
 	setContainerRLimits()

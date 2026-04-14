@@ -20,7 +20,7 @@ import (
 type ContainerInfo struct {
 	ID        string            `json:"id"`
 	Image     string            `json:"image"`
-	Command   string            `json:"command"`
+	Command   []string          `json:"command"`
 	PID       int               `json:"pid"`
 	Status    string            `json:"status"`
 	Health    string            `json:"health,omitempty"` // starting|healthy|unhealthy|none
@@ -30,6 +30,34 @@ type ContainerInfo struct {
 	Name      string            `json:"name,omitempty"`
 	Project   string            `json:"project,omitempty"`
 	IP        string            `json:"ip,omitempty"`
+}
+
+// UnmarshalJSON handles legacy state where command was a joined string.
+func (c *ContainerInfo) UnmarshalJSON(data []byte) error {
+	type Alias ContainerInfo
+	aux := &struct {
+		Command interface{} `json:"command"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	switch v := aux.Command.(type) {
+	case string:
+		c.Command = []string{v}
+	case []interface{}:
+		var cmd []string
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				cmd = append(cmd, s)
+			}
+		}
+		c.Command = cmd
+	}
+	return nil
 }
 
 var (

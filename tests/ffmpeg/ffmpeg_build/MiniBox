@@ -1,0 +1,4 @@
+BASE node:18-bullseye-slim
+
+BLOCK setup
+    run apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*

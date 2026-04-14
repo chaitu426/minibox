@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chaitu426/minibox/internal/config"
@@ -145,6 +146,11 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 		User:        req.User,
 	}
 
+	containerPath := filepath.Join(config.DataRoot, "containers", containerID)
+	os.MkdirAll(containerPath, 0755)
+	configData, _ := json.Marshal(req)
+	os.WriteFile(filepath.Join(containerPath, "config.json"), configData, 0644)
+
 	if req.Detached {
 		output, err := runtime.RunCommand(r.Context(), containerID, req.Image, opts, true, req.PortMap, req.Volumes, req.Env, req.Command, req.Name, req.Project)
 		if err != nil {
@@ -199,6 +205,83 @@ func RunContainerHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "\n[error] %v\n", err2)
 		return
 	}
+	w.Write(output)
+}
+
+func StartContainerHandler(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	containers := runtime.GetAllContainers()
+	c, exists := containers[id]
+	if !exists {
+		http.Error(w, "container not found", http.StatusNotFound)
+		return
+	}
+	if c.Status == "running" {
+		http.Error(w, "container is already running", http.StatusBadRequest)
+		return
+	}
+
+	configPath := filepath.Join(config.DataRoot, "containers", id, "config.json")
+	data, err := os.ReadFile(configPath)
+	var req RunRequest
+	if err == nil {
+		json.Unmarshal(data, &req)
+	} else {
+		// Fallback for legacy containers (started before config.json was implemented or during migration)
+		fmt.Printf("[warn] no config.json for %s, using fallback\n", id)
+		
+		cmdArgs := c.Command
+		if len(cmdArgs) == 1 {
+			// Legacy fallback: if we have a single string, it might be a joined command
+			cmdStr := cmdArgs[0]
+			for {
+				newCmd := strings.TrimPrefix(cmdStr, "/bin/sh -c ")
+				if newCmd == cmdStr {
+					break
+				}
+				cmdStr = newCmd
+			}
+			cmdArgs = []string{"/bin/sh", "-c", strings.TrimSpace(cmdStr)}
+		}
+
+		req = RunRequest{
+			Image:   c.Image,
+			Command: cmdArgs,
+			PortMap: c.Ports,
+			Name:    c.Name,
+			Project: c.Project,
+		}
+	}
+
+	opts := runtime.ContainerOptions{
+		MemoryMB:    req.MemoryMB,
+		CPUMax:      req.CPUMax,
+		CPUSet:      req.CPUSet,
+		IOWeight:    req.IOWeight,
+		OOMScoreAdj: req.OOMScoreAdj,
+		Sysctls:     req.Sysctls,
+		DBMode:      req.DBMode,
+		ShmSize:     req.ShmSize,
+		User:        req.User,
+	}
+
+	// Ensure any stale OverlayFS mount from a previous run is cleaned up before
+	// attempting to re-mount. Without this, the overlay mount syscall can hang
+	// indefinitely if the rootfs is still busy from the prior container exit.
+	runtime.UnmountRootfs(id)
+
+	// Always restart in detached mode for simple API
+	output, err := runtime.RunCommand(r.Context(), id, req.Image, opts, true, req.PortMap, req.Volumes, req.Env, req.Command, req.Name, req.Project)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Write(output)
 }
 

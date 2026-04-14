@@ -131,10 +131,10 @@ func (r *interactiveReader) Read(p []byte) (int, error) {
 
 func printMainHelp() {
 	utils.Banner()
-	fmt.Println("  run, exec, ps, logs, stop, kill, rm, stats")
+	fmt.Println("  run, start, exec, ps, logs, stop, kill, rm, stats")
 	fmt.Println("  compose [up|down|ps]")
 	fmt.Println("Images:")
-	fmt.Println("  build, images, save, load, rmi")
+	fmt.Println("  pull, build, images, save, load, rmi")
 	fmt.Println("System:")
 	fmt.Println("  ping, system prune")
 	fmt.Println()
@@ -190,6 +190,32 @@ func triggerBuild(imageName, dir string) error {
 		return fmt.Errorf("build stream error: %v", err)
 	}
 	return nil
+}
+
+func pullCommand() {
+	if len(os.Args) < 3 {
+		exitf(2, "Usage: minibox pull <image>")
+	}
+	imageName := os.Args[2]
+
+	resp, err := apiPOSTStream("/images/pull?image="+imageName, "application/json", nil)
+	if err != nil {
+		exitf(1, "Failed to connect to daemon: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		exitf(1, "Pull failed with status: %s", resp.Status)
+	}
+
+	// Stream response
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		fmt.Println(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("[error] reading pull response: %v\n", err)
+	}
 }
 
 func buildCommand() {
@@ -800,6 +826,23 @@ func execWithArgs(id string, cmdArgs []string, interactive bool) {
 	}
 }
 
+func formatCommand(val interface{}) string {
+	switch v := val.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var parts []string
+		for _, p := range v {
+			if s, ok := p.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
 func psCommand() {
 	showAll := false
 	jsonOut := false
@@ -857,7 +900,7 @@ func psCommand() {
 				continue
 			}
 			img, _ := c["image"].(string)
-			cmdStr, _ := c["command"].(string)
+			cmdStr := formatCommand(c["command"])
 			created := ""
 			if v, ok := c["created_at"].(string); ok {
 				created = v
@@ -912,7 +955,7 @@ func psCommand() {
 			continue
 		}
 		img := c["image"].(string)
-		cmdStr := c["command"].(string)
+		cmdStr := formatCommand(c["command"])
 		if len(cmdStr) > 25 {
 			cmdStr = cmdStr[:22] + "..."
 		}
@@ -1078,6 +1121,23 @@ func rmiCommand() {
 		exitf(1, "%s", readHTTPError(resp))
 	}
 	io.Copy(os.Stdout, resp.Body)
+}
+
+func startCommand() {
+	if len(os.Args) < 3 {
+		exitf(2, "Usage: minibox start <containerID>")
+	}
+	id := url.QueryEscape(os.Args[2])
+	resp, err := apiPOST("/containers/start?id="+id, "application/json", nil)
+	if err != nil {
+		exitf(1, "Failed to connect to daemon: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		exitf(1, "%s", readHTTPError(resp))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Print(string(body))
 }
 
 func stopCommand() {
@@ -1610,6 +1670,8 @@ func main() {
 	switch command {
 	case "ping":
 		ping()
+	case "pull":
+		pullCommand()
 	case "build":
 		buildCommand()
 	case "run":
@@ -1635,6 +1697,8 @@ func main() {
 		loadCommand()
 	case "rmi":
 		rmiCommand()
+	case "start":
+		startCommand()
 	case "stop":
 		stopCommand()
 	case "kill":

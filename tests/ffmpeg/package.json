@@ -1,10 +1,15 @@
 {
-  "name": "minibox-ffmpeg-test",
+  "name": "minibox-ffmpeg-editor",
   "version": "1.0.0",
-  "description": "Test FFmpeg inside Minibox",
-  "main": "test.js",
+  "description": "Video editor running on Minibox containers",
+  "main": "server.js",
   "scripts": {
-    "test": "node test.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "axios": "^1.6.8",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1"
+  }
 }

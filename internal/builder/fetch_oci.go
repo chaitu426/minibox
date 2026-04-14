@@ -92,6 +92,78 @@ type manifestV2 struct {
 	} `json:"manifests"`
 }
 
+// downloadBlobWithRetry downloads a single blob to the persistent blobs storage.
+func downloadBlobWithRetry(client *http.Client, blobURL, token, digest string, out io.Writer) error {
+	blobsPath := filepath.Join(config.DataRoot, "blobs", "sha256")
+	os.MkdirAll(blobsPath, 0755)
+	targetPath := filepath.Join(blobsPath, digest)
+
+	// Skip if already exists
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil
+	}
+
+	tmpTar := filepath.Join(config.DataRoot, "tmp-pull-"+digest)
+
+	var lastErr error
+	for attempt := 1; attempt <= layerDownloadRetries; attempt++ {
+		if attempt > 1 {
+			wait := time.Duration(attempt) * 2 * time.Second
+			fmt.Fprintf(out, "[pull] blob %s download failed (%v), retrying in %s (attempt %d/%d)...\n",
+				digest[:12], lastErr, wait, attempt, layerDownloadRetries)
+			time.Sleep(wait)
+		}
+
+		req, err := http.NewRequest("GET", blobURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch: %w", err)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %s", resp.Status)
+			continue
+		}
+
+		f, err := os.Create(tmpTar)
+		if err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+
+		_, copyErr := io.Copy(f, resp.Body)
+		f.Close()
+		resp.Body.Close()
+
+		if copyErr != nil {
+			os.Remove(tmpTar)
+			lastErr = fmt.Errorf("copy: %w", copyErr)
+			continue
+		}
+
+		// Success - move to final location
+		if err := os.Rename(tmpTar, targetPath); err != nil {
+			os.Remove(tmpTar)
+			lastErr = fmt.Errorf("rename: %w", err)
+			continue
+		}
+		return nil
+	}
+
+	return fmt.Errorf("blob %s failed after %d attempts: %w", digest[:12], layerDownloadRetries, lastErr)
+}
+
 // downloadLayerWithRetry downloads a single blob to a temp file, retrying up to
 // layerDownloadRetries times on transient errors (EOF, connection reset, etc.).
 func downloadLayerWithRetry(client *http.Client, blobURL, token, digest string, out io.Writer) (string, error) {
@@ -329,5 +401,157 @@ func FetchOCIImage(imageRef, destDir string, out io.Writer) error {
 		}
 	}
 
+	return nil
+}
+
+// PullOCIImage downloads an image from a Docker V2 registry and registers it in Minibox
+func PullOCIImage(imageRef string, out io.Writer) error {
+	ref := utils.ParseImageRef(imageRef)
+
+	registryURL := ref.Registry
+	if !strings.HasPrefix(registryURL, "http") {
+		registryURL = "https://" + registryURL
+	}
+
+	manifestURL := fmt.Sprintf("%s/v2/%s/manifests/%s", registryURL, ref.Repo, ref.Tag)
+
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", manifestURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json")
+
+	fmt.Fprintf(out, "[pull] fetching %s manifest...\n", imageRef)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	var token string
+	if resp.StatusCode == 401 {
+		authHeader := resp.Header.Get("Www-Authenticate")
+		resp.Body.Close()
+
+		challenge := parseAuthHeader(authHeader)
+		challenge.Scope = fmt.Sprintf("repository:%s:pull", ref.Repo)
+		token, err = fetchToken(challenge)
+		if err != nil {
+			return fmt.Errorf("failed to get token: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err = client.Do(req)
+		if err != nil {
+			return err
+		}
+	}
+
+	if resp.StatusCode != 200 {
+		resp.Body.Close()
+		return fmt.Errorf("failed to fetch manifest: %s", resp.Status)
+	}
+
+	var manifest manifestV2
+	manifestData, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return err
+	}
+
+	// Deal with Multi-Arch Manifest Lists
+	if len(manifest.Manifests) > 0 {
+		fmt.Fprintf(out, "[pull] %s is a manifest list, resolving amd64/linux...\n", imageRef)
+		targetDigest := ""
+		for _, m := range manifest.Manifests {
+			if m.Platform.Architecture == "amd64" && m.Platform.OS == "linux" {
+				targetDigest = m.Digest
+				break
+			}
+		}
+		if targetDigest == "" {
+			targetDigest = manifest.Manifests[0].Digest
+			fmt.Fprintf(out, "[pull] warning: amd64 not found, falling back to %s\n", targetDigest)
+		}
+
+		nestedURL := fmt.Sprintf("%s/v2/%s/manifests/%s", registryURL, ref.Repo, targetDigest)
+		reqNested, _ := http.NewRequest("GET", nestedURL, nil)
+		reqNested.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+		if token != "" {
+			reqNested.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		respNested, err := client.Do(reqNested)
+		if err != nil {
+			return fmt.Errorf("failed to fetch nested manifest: %w", err)
+		}
+		defer respNested.Body.Close()
+
+		if respNested.StatusCode != 200 {
+			return fmt.Errorf("failed to fetch nested manifest: %s", respNested.Status)
+		}
+		manifestData, _ = io.ReadAll(respNested.Body)
+		if err := json.Unmarshal(manifestData, &manifest); err != nil {
+			return err
+		}
+	}
+
+	manifestDigest := utils.CalculateDigest(manifestData)
+	fmt.Fprintf(out, "[pull] manifest: %s\n", manifestDigest[:12])
+
+	// Save Manifest to blobs
+	blobsPath := filepath.Join(config.DataRoot, "blobs", "sha256")
+	os.MkdirAll(blobsPath, 0755)
+	os.WriteFile(filepath.Join(blobsPath, manifestDigest), manifestData, 0644)
+
+	// Pull layers and config in parallel
+	totalItems := len(manifest.Layers)
+	if manifest.Config.Digest != "" {
+		totalItems++
+	}
+
+	results := make(chan error, totalItems)
+	sem := make(chan struct{}, maxConcurrentLayerPulls)
+
+	if manifest.Config.Digest != "" {
+		go func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			digest := strings.TrimPrefix(manifest.Config.Digest, "sha256:")
+			fmt.Fprintf(out, "[pull] pulling config %s...\n", digest[:12])
+			blobURL := fmt.Sprintf("%s/v2/%s/blobs/%s", registryURL, ref.Repo, manifest.Config.Digest)
+			results <- downloadBlobWithRetry(client, blobURL, token, digest, out)
+		}()
+	}
+
+	for i, l := range manifest.Layers {
+		go func(idx int, layer struct {
+			MediaType string `json:"mediaType"`
+			Size      int64  `json:"size"`
+			Digest    string `json:"digest"`
+		}) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			digest := strings.TrimPrefix(layer.Digest, "sha256:")
+			fmt.Fprintf(out, "[pull] pulling layer %d/%d (%s)...\n", idx+1, len(manifest.Layers), digest[:12])
+			blobURL := fmt.Sprintf("%s/v2/%s/blobs/%s", registryURL, ref.Repo, layer.Digest)
+			results <- downloadBlobWithRetry(client, blobURL, token, digest, out)
+		}(i, l)
+	}
+
+	for i := 0; i < totalItems; i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+
+	// Update index.json
+	fmt.Fprintf(out, "[pull] registering %s in index.json...\n", imageRef)
+	if err := updateOCIIndex(imageRef, manifestDigest, int64(len(manifestData))); err != nil {
+		return fmt.Errorf("failed to update index: %w", err)
+	}
+
+	fmt.Fprintf(out, "[pull] successfully pulled %s\n", imageRef)
 	return nil
 }

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minibox Video Editor Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="mesh-bg"></div>
+
+    <div class="container">
+        <header>
+            <div class="logo">
+                <span class="logo-icon">🎬</span>
+                Minibox<span class="highlight">Studio</span><span class="badge">PRO</span>
+            </div>
+            <p class="subtitle">Next-gen Cloud Video Processing</p>
+        </header>
+
+        <main class="dashboard">
+            <div class="panel-left">
+                <section class="upload-section card split-card">
+                    <h2><span class="section-icon">1</span> Select Media File</h2>
+                    
+                    <div class="drop-zone" id="drop-zone">
+                        <span class="drop-icon">📁</span>
+                        <p>Drag & Drop your video here</p>
+                        <p class="small-text">or click to browse</p>
+                        <input type="file" id="file-input" accept="video/*, audio/*" hidden>
+                    </div>
+                    <div class="file-info hidden" id="file-info">
+                        <div class="file-details">
+                            <span class="file-icon">🎥</span>
+                            <span class="filename" id="filename">video.mp4</span>
+                        </div>
+                        <button class="icon-btn remove-file" id="remove-file" title="Remove file">✕</button>
+                    </div>
+                </section>
+            </div>
+
+            <div class="panel-right">
+                <section class="config-section card split-card">
+                    <h2><span class="section-icon">2</span> Process Configuration</h2>
+                    
+                    <div class="options-grid">
+                        <label class="option-card active" data-action="to_mp4">
+                            <div class="opt-indicator"></div>
+                            <div class="opt-content">
+                                <h4>Convert to MP4</h4>
+                                <p>Fast encode preset</p>
+                            </div>
+                        </label>
+
+                        <label class="option-card" data-action="extract_audio">
+                            <div class="opt-indicator"></div>
+                            <div class="opt-content">
+                                <h4>Extract Audio</h4>
+                                <p>Convert to MP3</p>
+                            </div>
+                        </label>
+
+                        <label class="option-card" data-action="scale_720">
+                            <div class="opt-indicator"></div>
+                            <div class="opt-content">
+                                <h4>Scale 720p</h4>
+                                <p>Resize for mobile/web</p>
+                            </div>
+                        </label>
+
+                        <label class="option-card custom-opt" data-action="custom">
+                            <div class="opt-indicator"></div>
+                            <div class="opt-content">
+                                <h4>Custom FFmpeg</h4>
+                                <p>Advanced raw parameters</p>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div class="custom-args hidden" id="custom-args-container">
+                        <input type="text" id="custom-args" placeholder="-c:v libx265 -crf 28 -an" spellcheck="false">
+                        <p class="help-text">Input and output paths are injected automatically. Just write your flags.</p>
+                    </div>
+
+                    <button class="btn-primary start-btn" id="start-btn" disabled>
+                        <span>Start Processing</span>
+                        <div class="btn-glow"></div>
+                        <span class="btn-icon">⚡</span>
+                    </button>
+                </section>
+            </div>
+
+            <section class="result-section card hidden" id="result-section" style="grid-column: 1 / -1;">
+                <h2><span class="section-icon">✨</span> Output Render</h2>
+
+                <div class="terminal-view hidden" id="terminal-view">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="term-title">Minibox Execution Logs</span>
+                    </div>
+                    <pre class="terminal-body" id="logs-body">Waiting for container to init...</pre>
+                </div>
+
+                <div class="output-presentation hidden" id="output-presentation">
+                    <video controls class="result-video" id="result-video"></video>
+                    <audio controls class="result-audio hidden" id="result-audio"></audio>
+                    
+                    <a href="#" class="btn-download" id="download-link" download>
+                        <span>Download Asset</span>
+                        <span class="btn-icon">⬇</span>
+                    </a>
+                </div>
+                
+                <div class="loader-overlay hidden" id="loader">
+                    <div class="spinner-ring"></div>
+                    <p class="loader-text" id="loader-timer">Executing inside container...</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -146,7 +146,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 		Name:      name,
 		Project:   project,
 		Image:     image,
-		Command:   strings.Join(cmdArgs, " "),
+		Command:   cmdArgs,
 		PID:       cmd.Process.Pid,
 		Status:    "running",
 		Health:    "none",
@@ -164,6 +164,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 			err := cmd.Wait()
 			MarkContainerExited(containerID, exitCode(err))
 			network.TeardownContainerNetwork(containerID, portMap, ip)
+			UnmountRootfs(containerID)
 			logFile.Close()
 		}()
 		return []byte(containerID + "\n"), nil
@@ -172,6 +173,7 @@ func RunCommand(ctx context.Context, containerID string, image string, opts Cont
 	err = cmd.Wait()
 	MarkContainerExited(containerID, exitCode(err))
 	network.TeardownContainerNetwork(containerID, portMap, ip)
+	UnmountRootfs(containerID)
 	logFile.Close()
 
 	if err != nil && ctx.Err() != nil {
@@ -264,7 +266,7 @@ func RunCommandInteractive(ctx context.Context, containerID string, image string
 		Name:      name,
 		Project:   project,
 		Image:     image,
-		Command:   strings.Join(cmdArgs, " "),
+		Command:   cmdArgs,
 		PID:       cmd.Process.Pid,
 		Status:    "running",
 		CreatedAt: time.Now(),
@@ -309,6 +311,7 @@ func RunCommandInteractive(ctx context.Context, containerID string, image string
 	err = cmd.Wait()
 	MarkContainerExited(containerID, exitCode(err))
 	network.TeardownContainerNetwork(containerID, portMap, ip)
+	UnmountRootfs(containerID)
 
 	// Briefly wait to ensure terminal output is flushed
 	select {
@@ -450,7 +453,7 @@ func RunCommandStream(ctx context.Context, containerID string, image string, opt
 		Name:      name,
 		Project:   project,
 		Image:     image,
-		Command:   strings.Join(cmdArgs, " "),
+		Command:   cmdArgs,
 		PID:       cmd.Process.Pid,
 		Status:    "running",
 		Health:    "none",
